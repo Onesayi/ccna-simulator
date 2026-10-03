@@ -1,6 +1,8 @@
 import { networkAddress, prefixToMask, sameSubnet } from '../core/addressing';
 import type { Device, Interface } from '../devices/device';
 import { IpDevice } from '../devices/ip-device';
+import { Pc } from '../devices/pc';
+import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
 import type { Check } from './types';
 
@@ -27,6 +29,11 @@ function ipDevice(d: Device): IpDevice {
 
 function switchOf(d: Device): Switch {
   if (!(d instanceof Switch)) throw new Error(`${d.hostname} is not a switch`);
+  return d;
+}
+
+function routerOf(d: Device): Router {
+  if (!(d instanceof Router)) throw new Error(`${d.hostname} is not a router`);
   return d;
 }
 
@@ -160,6 +167,94 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
         at = idx + 1;
       }
       return ok;
+    }
+    case 'ospfRouterId': {
+      const r = routerOf(device(check.device));
+      const p = [...r.ospf.values()][0];
+      if (!p) return fail(`OSPF is not running on ${r.hostname}`);
+      if (!p.routerId) return fail(`OSPF on ${r.hostname} has no router ID yet`);
+      if (p.routerId === check.routerId) return ok;
+      const pending = p.configuredRouterId === check.routerId ? ' (configured, but not in use until the process restarts)' : '';
+      return fail(`${r.hostname} uses router ID ${p.routerId}${pending}`);
+    }
+    case 'ospfNeighbor': {
+      const r = routerOf(device(check.device));
+      const want = check.state ?? 'FULL';
+      const found = [...r.ospf.values()].flatMap((p) => p.neighbors()).find(({ n }) => n.routerId === check.neighbor);
+      if (!found) return fail(`${r.hostname} has no OSPF neighbor ${check.neighbor}`);
+      return found.n.state === want ? ok : fail(`${r.hostname} sees ${check.neighbor} in state ${found.n.state}`);
+    }
+    case 'ospfInterface': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const p = [...r.ospf.values()].find((x) => x.ifaces.has(i));
+      const oi = p?.ifaces.get(i);
+      if (!p || !oi) return fail(`OSPF is not running on ${i.name}`);
+      if (check.passive !== undefined && oi.passive !== check.passive) return fail(`${i.name} is ${oi.passive ? '' : 'not '}passive`);
+      if (check.priority !== undefined && p.priority(i) !== check.priority) return fail(`${i.name} has OSPF priority ${p.priority(i)}`);
+      const role = p.interfaceState(oi);
+      if (check.role && role !== check.role) return fail(`${i.name} is ${role}`);
+      return ok;
+    }
+    case 'dhcpLease': {
+      const d = device(check.device);
+      if (!(d instanceof Pc)) throw new Error(`${d.hostname} is not a PC`);
+      if (!d.dhcp) return fail(`${d.hostname} uses a static address`);
+      if (!d.lease || !d.nic.ip) return fail(d.apipa ? `${d.hostname} has a self-assigned ${d.nic.ip!.address} (no DHCP server answered)` : `${d.hostname} has no DHCP lease`);
+      if (!sameSubnet(d.nic.ip.address, check.network, check.prefix)) return fail(`${d.hostname} leased ${d.nic.ip.address}, outside ${check.network}/${check.prefix}`);
+      if (check.gateway && d.defaultGateway !== check.gateway) return fail(`${d.hostname} was given gateway ${d.defaultGateway ?? 'none'}`);
+      return ok;
+    }
+    case 'dhcpPool': {
+      const r = routerOf(device(check.device));
+      const pool = r.dhcpServer.poolFor(check.network);
+      if (!pool || pool.prefix !== check.prefix) return fail(`${r.hostname} has no DHCP pool for ${check.network}/${check.prefix}`);
+      if (check.defaultRouter && pool.defaultRouter !== check.defaultRouter) return fail(`Pool ${pool.name} hands out gateway ${pool.defaultRouter ?? 'none'}`);
+      return ok;
+    }
+    case 'dhcpExcluded': {
+      const r = routerOf(device(check.device));
+      return r.dhcpServer.isExcluded(check.address) ? ok : fail(`${check.address} could be leased to a client`);
+    }
+    case 'helperAddress': {
+      const d = device(check.device);
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      return i.helpers?.includes(check.address) ? ok : fail(`${i.name} relays to ${i.helpers?.join(', ') || 'nobody'}`);
+    }
+    case 'natInterface': {
+      const d = device(check.device);
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      return i.nat === check.side ? ok : fail(i.nat ? `${i.name} is a NAT ${i.nat} interface` : `${i.name} has no NAT role`);
+    }
+    case 'natStatic': {
+      const r = routerOf(device(check.device));
+      const m = r.nat.statics.find((x) => x.local === check.local);
+      if (!m) return fail(`${check.local} has no static translation`);
+      return m.global === check.global ? ok : fail(`${check.local} is mapped to ${m.global}`);
+    }
+    case 'natOverload': {
+      const r = routerOf(device(check.device));
+      return r.nat.rules.some((x) => x.overload) ? ok : fail(`${r.hostname} has no NAT overload rule`);
+    }
+    case 'accessGroup': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const applied = i.accessGroup?.[check.direction];
+      if (!applied) return fail(`No ACL is applied ${check.direction}bound on ${i.name}`);
+      if (check.acl && applied !== check.acl) return fail(`${i.name} uses ACL ${applied} ${check.direction}bound`);
+      return ok;
+    }
+    case 'connect': {
+      const from = ipDevice(device(check.from));
+      const r = from.connect(check.to, check.port);
+      from.network?.run();
+      const open = r.status === 'open';
+      if (check.expect === 'open') return open ? ok : fail(`${from.hostname} cannot open port ${check.port} on ${check.to} (${r.status})`);
+      return open ? fail(`${from.hostname} can still open port ${check.port} on ${check.to}`) : ok;
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');

@@ -41,7 +41,7 @@ test('sandbox: VLANs and trunks on SW1', async ({ page }) => {
 test('labs: catalog with progress by blueprint domain', async ({ page }) => {
   await seedProgress(page);
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(12);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(24);
   await page.screenshot({ path: out('catalog.png') });
 });
 
