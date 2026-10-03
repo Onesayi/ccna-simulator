@@ -1,5 +1,8 @@
 import type { LabDefinition } from '../types';
 import { infrastructureLabs } from './infrastructure';
+import { ipv6Labs } from './ipv6';
+import { securityLabs } from './security';
+import { stpLabs } from './stp';
 import { operationsLabs } from './operations';
 import { ospfLabs } from './ospf';
 import { routingLabs } from './routing';
@@ -10,14 +13,21 @@ import { switchingLabs } from './switching';
 const ORDER = [
   'router-basics',
   'subnetting-hosts',
+  'ipv6-addressing',
   'vlans-basic',
   'trunk-two-switches',
   'router-on-a-stick',
   'l3-switch-svi',
   'switch-management',
+  'stp-root-bridge',
+  'stp-portfast-bpduguard',
+  'etherchannel-lacp',
+  'etherchannel-troubleshoot',
   'static-routing',
   'default-route',
   'floating-static',
+  'ipv6-static-routing',
+  'ipv6-troubleshoot',
   'ospf-single-area',
   'ospf-dr-bdr',
   'ospf-troubleshoot',
@@ -28,13 +38,15 @@ const ORDER = [
   'acl-standard',
   'acl-extended',
   'acl-troubleshoot',
+  'port-security',
+  'port-security-errdisable',
   'syslog-read',
   'fix-the-office',
   'capstone-two-sites',
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...switchingLabs, ...routingLabs, ...ospfLabs, ...serviceLabs, ...operationsLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...routingLabs, ...ospfLabs, ...serviceLabs, ...securityLabs, ...operationsLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),

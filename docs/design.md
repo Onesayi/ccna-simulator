@@ -4,7 +4,7 @@ The full scope and design doc lives in the project's Claude Doc "CCNA Simulator:
 
 - **Goal:** a CCNA 200-301 v2.0 study tool that also works as a portfolio demo (static site, no server).
 - **Stack:** TypeScript monorepo; pure engine package; React + Vite UI; React Flow canvas; xterm.js console; Zustand; Vitest and Playwright; GitHub Pages.
-- **Phases:** 1 core engine (switching, VLANs, trunks, SVIs, static routing, ping/traceroute, CDP/LLDP, show commands, capture panel) · 2 study mode (labs, grader, progress) · 3 portfolio polish · 4 protocol expansion (OSPF, DHCP, NAT and ACLs done; IPv6, Rapid PVST+, FHRP, DNS, EtherChannel to come) · 5 security and operations.
+- **Phases:** 1 core engine (switching, VLANs, trunks, SVIs, static routing, ping/traceroute, CDP/LLDP, show commands, capture panel) · 2 study mode (labs, grader, progress) · 3 portfolio polish · 4 protocol expansion (OSPF, DHCP, NAT, ACLs, IPv6, PVST+/Rapid PVST+, EtherChannel and port security done; FHRP and DNS to come) · 5 security and operations.
 
 ## Engine rules
 
@@ -19,7 +19,7 @@ The full scope and design doc lives in the project's Claude Doc "CCNA Simulator:
 - **Grader:** `LabRun` builds the lab's topology and keeps devices keyed by their lab hostname, so a learner renaming a device does not break grading. Checks are pure reads of engine state, except `ping`, `traceroute` and `connect`, which send traffic and so only run on "Check my work". Quiz objectives are graded from the learner's answer.
 - **Progress:** `Progress` holds pure state transitions (start, check, hint, solution); the web app persists the store in `localStorage` under `ccna-sim:progress:v1`.
 - **Tests:** every lab must start unsolved and be fully solved by typing its model answer into the real CLI.
-- **Gaps:** Lab state is not saved mid-attempt; leaving a lab resets it. Domain 5.0 has one lab so far (syslog); port security, DHCP snooping, SSH and AAA need engine support first.
+- **Gaps:** Lab state is not saved mid-attempt; leaving a lab resets it. Domain 4.7 has port security labs; domain 5.0 has one lab so far (syslog). DHCP snooping, SSH and AAA need engine support first.
 
 ## Protocols (Phase 4, first pass)
 
@@ -27,3 +27,11 @@ The full scope and design doc lives in the project's Claude Doc "CCNA Simulator:
 - **OSPF:** single-area OSPFv2 (`packages/engine/src/routing/ospf.ts`). A neighbor not heard in a round is dead. Database exchange is simplified: a DBD carries full LSAs and the adjacency goes straight to FULL, so EXCHANGE and LOADING are not visible. LSAs do not age; a flush leaves a tombstone so stale copies cannot come back. Timer and mask mismatches are silent, as on IOS; area mismatches and duplicate router IDs are logged.
 - **DHCP, NAT, ACLs** (`packages/engine/src/services`): DHCP runs DORA with retransmits (routers drop the packet that triggers ARP, as on IOS), relays through `ip helper-address` using giaddr, and gives PCs an APIPA address when no server answers. NAT handles static, pool and overload (PAT, keyed on ICMP id or TCP port) and answers ARP for its global addresses. ACLs are evaluated inbound before routing and outbound after; a deny returns an ICMP unreachable, and outbound ACLs never filter the router's own traffic.
 - **IP pipeline:** receive, ARP and DHCP, ACL in, OSPF, NAT outside-to-inside, then local delivery or forwarding (TTL, route lookup, NAT inside-to-outside, ACL out).
+
+## Protocols (Phase 4, second pass)
+
+- **Spanning tree** (`packages/engine/src/switching/stp.ts`): one instance per VLAN for both `pvst` and `rapid-pvst`. Each round, designated ports send BPDUs and `settle` elects the root by (root ID, cost, bridge ID, port ID) and assigns root, designated, alternate and backup roles. A BPDU not heard in a round counts as lost and max age is 20 hops. There is no proposal/agreement handshake and no listening/learning timers, so a port moves straight to forwarding or blocking; the two modes differ only in the name shown. Until the first settle every port forwards; a port that comes up later waits one round unless it is PortFast. PortFast, BPDU guard (err-disable) and root guard (root-inconsistent) are supported; loop guard, MST and per-VLAN port cost are not. MAC tables are flushed when the topology changes.
+- **EtherChannel** (`packages/engine/src/switching/etherchannel.ts`): LACP and PAgP PDUs are sent per member each round. A member bundles when the modes negotiate, its L2 settings match the port-channel, and it reaches the same partner as the other members; otherwise it is suspended and silent. Mode `on` does not check the far end. Frames are spread with a src-dst-mac hash. STP sees the port-channel as one port (cost 3, port number 64+N). There is no L3 EtherChannel.
+- **Port security:** checked on ingress before STP and MAC learning. Supports maximum, static, dynamic and sticky addresses and the three violation modes. Dynamic addresses are cleared when the port goes down; `shutdown` clears err-disable. There is no address aging, no trunk-port security and no errdisable recovery timer.
+- **IPv6** (`packages/engine/src/ipv6/stack.ts`): routers and PCs only (no switch SVIs). Global, EUI-64 and link-local addresses, solicited-node multicast, NS/NA, RS/RA and SLAAC on PCs, with the router's link-local address as the PC gateway. Routers forward and advertise only with `ipv6 unicast-routing`. Static routes resolve recursively; a link-local next hop needs an exit interface. There is no DAD, DHCPv6 or OSPFv3, neighbors never go stale, pings to link-local addresses are not supported, and routers have no `ipv6 address autoconfig`.
+- **CLI:** `interface range` runs each command on every interface in the range. The command matcher prefers the candidate with more literal keywords, then more exactly typed keywords, when abbreviations are ambiguous.

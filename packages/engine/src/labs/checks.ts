@@ -1,4 +1,6 @@
 import { networkAddress, prefixToMask, sameSubnet } from '../core/addressing';
+import { iosIpv6, ipv6InPrefix, ipv6Network, normaliseIpv6 } from '../core/ipv6';
+import { channelProtocol } from '../switching/etherchannel';
 import type { Device, Interface } from '../devices/device';
 import { IpDevice } from '../devices/ip-device';
 import { Pc } from '../devices/pc';
@@ -144,9 +146,9 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const from = ipDevice(device(check.from));
       const net = from.network;
       // Routers drop the packet that triggers ARP, so warm the path before judging it.
-      const warm = from.ping(check.to, 4, 1_000);
+      const warm = from.pingAny(check.to, 4, 1_000);
       net?.run();
-      const final = from.ping(check.to, 3, 1_000);
+      const final = from.pingAny(check.to, 3, 1_000);
       net?.run();
       const reached = final.every((r) => r.success);
       const any = [...warm, ...final].some((r) => r.success);
@@ -255,6 +257,111 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const open = r.status === 'open';
       if (check.expect === 'open') return open ? ok : fail(`${from.hostname} cannot open port ${check.port} on ${check.to} (${r.status})`);
       return open ? fail(`${from.hostname} can still open port ${check.port} on ${check.to}`) : ok;
+    }
+    case 'ipv6Address': {
+      const d = ipDevice(device(check.device));
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist yet`);
+      const all = d.ipv6.globals(i);
+      if (!all.length) return fail(`${i.name} has no global IPv6 address`);
+      const want = check.address ? normaliseIpv6(check.address) : undefined;
+      const match = all.find((a) => (want ? a.address === want : ipv6InPrefix(a.address, check.network!, check.prefix)));
+      const seen = all.map((a) => `${iosIpv6(a.address)}/${a.prefix}`).join(', ');
+      if (!match) return fail(`${i.name} has ${seen}`);
+      if (match.prefix !== check.prefix) return fail(`${i.name} has ${iosIpv6(match.address)}/${match.prefix}`);
+      if (check.eui64 && !match.eui64) return fail(`${iosIpv6(match.address)} was typed in full rather than built with EUI-64`);
+      if (check.slaac && !match.slaac) return fail(`${iosIpv6(match.address)} is static, not learned with SLAAC`);
+      return ok;
+    }
+    case 'ipv6LinkLocal': {
+      const d = ipDevice(device(check.device));
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist yet`);
+      if (!d.ipv6.enabled(i)) return fail(`IPv6 is not enabled on ${i.name}`);
+      const ll = d.ipv6.linkLocal(i);
+      return ll === normaliseIpv6(check.address) ? ok : fail(`${i.name} uses link-local address ${iosIpv6(ll)}`);
+    }
+    case 'ipv6Routing': {
+      const r = routerOf(device(check.device));
+      return r.ipv6Routing ? ok : fail(`IPv6 unicast routing is off on ${r.hostname}`);
+    }
+    case 'ipv6Route': {
+      const d = ipDevice(device(check.device));
+      const network = normaliseIpv6(check.network);
+      const hop = check.nextHop ? normaliseIpv6(check.nextHop) : undefined;
+      const match = d.ipv6
+        .routingTable()
+        .find((r) => r.network === network && r.prefix === check.prefix && (!check.code || r.code === check.code) && (!hop || r.nextHop === hop));
+      const what = `${iosIpv6(network)}/${check.prefix}${hop ? ` via ${iosIpv6(hop)}` : ''}`;
+      if (check.absent) return match ? fail(`${what} is in the IPv6 routing table`) : ok;
+      return match ? ok : fail(`No route to ${what} in the IPv6 routing table`);
+    }
+    case 'stpMode': {
+      const sw = switchOf(device(check.device));
+      return sw.stp.mode === check.mode ? ok : fail(`${sw.hostname} runs ${sw.stp.mode}`);
+    }
+    case 'stpRoot': {
+      const sw = switchOf(device(check.device));
+      const st = sw.stp.vlans.get(check.vlan);
+      if (!st) return fail(`Spanning tree is not running for VLAN ${check.vlan} on ${sw.hostname}`);
+      return sw.stp.isRoot(check.vlan) ? ok : fail(`The root bridge for VLAN ${check.vlan} is ${st.root.mac} (priority ${st.root.priority})`);
+    }
+    case 'stpPortRole': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const info = sw.stp.vlans.get(check.vlan)?.ports.get(sw.logicalOf(i));
+      if (!info) return fail(`${i.name} is not in the VLAN ${check.vlan} spanning tree`);
+      return info.role === check.role ? ok : fail(`${i.name} is a ${info.role} port in VLAN ${check.vlan}`);
+    }
+    case 'portfast': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      return sw.stp.portfast(i) ? ok : fail(`PortFast is off on ${i.name}`);
+    }
+    case 'bpduGuard': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      return sw.stp.bpduGuard(i) ? ok : fail(`BPDU guard is off on ${i.name}`);
+    }
+    case 'errDisabled': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      if (check.expect) return i.errDisabled ? ok : fail(`${i.name} is not err-disabled`);
+      return i.errDisabled ? fail(`${i.name} is err-disabled (${i.errDisabled})`) : ok;
+    }
+    case 'etherchannel': {
+      const sw = switchOf(device(check.device));
+      const po = sw.portChannel(check.group);
+      if (!po) return fail(`Port-channel${check.group} does not exist on ${sw.hostname}`);
+      const members = sw.members(po);
+      if (!members.length) return fail(`Port-channel${check.group} has no member ports`);
+      const proto = channelProtocol(members[0]!.channelGroup!.mode);
+      if (check.protocol && proto !== check.protocol) return fail(`Port-channel${check.group} uses ${proto === 'on' ? 'mode on' : proto.toUpperCase()}`);
+      const bundled = sw.bundledMembers(po).length;
+      return bundled >= check.bundled ? ok : fail(`Port-channel${check.group} has ${bundled} of ${members.length} ports bundled`);
+    }
+    case 'portSecurity': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const ps = i.portSecurity;
+      if (!ps?.enabled) return fail(`Port security is off on ${i.name}`);
+      if (check.maximum !== undefined && ps.maximum !== check.maximum) return fail(`${i.name} allows ${ps.maximum} MAC address${ps.maximum > 1 ? 'es' : ''}`);
+      if (check.violation && ps.violation !== check.violation) return fail(`The violation mode on ${i.name} is ${ps.violation}`);
+      if (check.sticky !== undefined && ps.sticky !== check.sticky) return fail(`Sticky learning is ${ps.sticky ? 'on' : 'off'} on ${i.name}`);
+      return ok;
+    }
+    case 'secureMac': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const found = (i.portSecurity?.addresses ?? []).filter((a) => !check.kind || a.type === check.kind);
+      const want = check.count ?? 1;
+      return found.length >= want ? ok : fail(`${i.name} has ${found.length} ${check.kind ?? 'secure'} address${found.length === 1 ? '' : 'es'}`);
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');

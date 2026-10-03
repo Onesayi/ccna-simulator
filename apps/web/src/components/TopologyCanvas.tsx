@@ -10,7 +10,7 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import { shortName, type Device } from '@ccna-sim/engine';
+import { Switch, shortName, type Device, type Interface } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
 const ICON: Record<Device['kind'], string> = { pc: '🖥️', switch: '🔀', router: '📡' };
@@ -20,6 +20,7 @@ type DeviceNode = Node<{ device: Device }, 'device'>;
 function DeviceNodeView({ data, selected }: NodeProps<DeviceNode>) {
   const d = data.device;
   const addr = d.interfaces.find((i) => i.ip)?.ip;
+  const v6 = d.kind === 'pc' ? d.interfaces[0]?.ipv6?.addresses[0] : undefined;
   return (
     <div className={`device-node ${d.kind}${selected ? ' selected' : ''}`}>
       <Handle type="source" position={Position.Top} id="t" />
@@ -28,12 +29,23 @@ function DeviceNodeView({ data, selected }: NodeProps<DeviceNode>) {
       <Handle type="source" position={Position.Right} id="r" />
       <span className="icon">{ICON[d.kind]}</span>
       <span className="name">{d.hostname}</span>
-      {d.kind === 'pc' && <span className="addr">{addr ? `${addr.address}/${addr.prefix}` : 'no IP'}</span>}
+      {d.kind === 'pc' && <span className="addr">{addr ? `${addr.address}/${addr.prefix}` : v6 ? `${v6.address}/${v6.prefix}` : 'no IP'}</span>}
     </div>
   );
 }
 
 const nodeTypes = { device: DeviceNodeView };
+
+/** VLANs spanning tree discards in on this end of a cable. */
+function blockedVlans(i: Interface): number[] {
+  const d = i.device;
+  return d instanceof Switch ? d.stp.blockedVlans(d.logicalOf(i)) : [];
+}
+
+/** "Po1" when the port is bundled into an EtherChannel. */
+function channel(i: Interface): string | undefined {
+  return i.bundled && i.channelGroup ? `Po${i.channelGroup.id}` : undefined;
+}
 
 /** Picks the handle pair that faces each other, so cables do not cross over their own nodes. */
 function handles(a: { x: number; y: number }, b: { x: number; y: number }): [string, string] {
@@ -56,6 +68,10 @@ export function TopologyCanvas() {
     }));
     const edges: Edge[] = topology.links.map((l) => {
       const up = l.a.isUp && l.b.isUp;
+      const vlans = up ? [...new Set([...blockedVlans(l.a), ...blockedVlans(l.b)])].sort((x, y) => x - y) : [];
+      const blocked = vlans.length > 0;
+      const po = channel(l.a) ?? channel(l.b);
+      const errDisabled = l.a.errDisabled ?? l.b.errDisabled;
       const pa = positions.get(l.a.device.id) ?? { x: 0, y: 0 };
       const pb = positions.get(l.b.device.id) ?? { x: 0, y: 0 };
       const [sh, th] = handles(pa, pb);
@@ -65,9 +81,9 @@ export function TopologyCanvas() {
         target: l.b.device.id,
         sourceHandle: sh,
         targetHandle: th,
-        label: `${shortName(l.a.name)} – ${shortName(l.b.name)}`,
-        className: up ? 'link-up' : 'link-down',
-        data: { up },
+        label: [`${shortName(l.a.name)} – ${shortName(l.b.name)}`, po, blocked && `STP blocks VLAN ${vlans.join(', ')}`, errDisabled && 'err-disabled'].filter(Boolean).join(' · '),
+        className: !up ? 'link-down' : blocked ? 'link-blocked' : po ? 'link-up link-bundled' : 'link-up',
+        data: { up, blocked },
       };
     });
     return { nodes, edges };

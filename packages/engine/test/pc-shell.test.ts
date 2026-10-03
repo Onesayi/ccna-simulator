@@ -24,7 +24,7 @@ describe('PC command prompt', () => {
     expect(l.shell.prompt).toBe('C:\\>');
     expect(l.shell.execute('')).toBe('');
     expect(l.shell.execute('?')).toMatch(/ipconfig <ip>/);
-    expect(l.shell.execute('help')).toMatch(/tracert <ip>/);
+    expect(l.shell.execute('help')).toMatch(/tracert <ip\|ipv6>/);
     expect(l.shell.execute('format c:')).toBe('Invalid Command.');
   });
 

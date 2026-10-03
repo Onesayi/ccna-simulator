@@ -5,12 +5,14 @@ import { Router } from '../devices/router';
 import { ospfConfig } from '../routing/ospf';
 import { formatAclEntry } from '../services/acl';
 import { Switch } from '../devices/switch';
+import { ipv6InterfaceConfig, ipv6RouteConfig } from './commands-ipv6';
 
 /** Formatters for IOS show commands and ping/traceroute output. Pure functions of engine state. */
 
 export function interfaceStatus(i: Interface): { status: string; protocol: string } {
   if (!i.adminUp) return { status: 'administratively down', protocol: 'down' };
-  const linkUp = i.kind === 'physical' ? peerUp(i) : i.kind === 'subinterface' ? i.parent!.isUp : true;
+  if (i.errDisabled) return { status: 'down', protocol: 'down' };
+  const linkUp = i.kind === 'physical' ? peerUp(i) : i.kind === 'subinterface' ? i.parent!.isUp : i.kind === 'port-channel' ? i.isUp : true;
   return { status: linkUp ? 'up' : 'down', protocol: i.isUp ? 'up' : 'down' };
 }
 
@@ -106,7 +108,11 @@ export function showArp(d: IpDevice): string {
 
 export function showVlanBrief(sw: Switch): string {
   const rows = [...sw.vlans.entries()].sort(([a], [b]) => a - b).map(([id, name]) => {
-    const ports = sw.ports.filter((i) => i.mode === 'access' && i.accessVlan === id).map((i) => shortName(i.name)).join(', ');
+    // Bundled members are listed as their port-channel.
+    const ports = [...sw.ports.filter((i) => !i.channelGroup), ...sw.portChannels]
+      .filter((i) => i.mode === 'access' && i.accessVlan === id)
+      .map((i) => shortName(i.name))
+      .join(', ');
     return `${String(id).padEnd(5)}${name.padEnd(33)}active    ${ports}`;
   });
   return ['VLAN Name                             Status    Ports', '---- -------------------------------- --------- -------------------------------', ...rows].join('\n');
@@ -132,7 +138,7 @@ export function formatVlanList(vlans: Iterable<number>): string {
 }
 
 export function showTrunks(sw: Switch): string {
-  const trunks = sw.ports.filter((i) => i.mode === 'trunk');
+  const trunks = [...sw.ports.filter((i) => !i.channelGroup), ...sw.portChannels].filter((i) => i.mode === 'trunk');
   const allowed = (i: Interface) => (i.allowedVlans === 'all' ? '1-4094' : formatVlanList(i.allowedVlans));
   const active = (i: Interface) => formatVlanList([...sw.vlans.keys()].filter((v) => sw.carriesVlan(i, v)));
   const pad = (i: Interface) => shortName(i.name).padEnd(12);
@@ -167,7 +173,17 @@ export function showInterfacesSwitchport(sw: Switch, i: Interface): string {
 
 export function runningConfig(d: Device & IpDevice): string {
   const out: string[] = ['Building configuration...', '', 'Current configuration : {bytes} bytes', '!', 'version 15.2', '!', `hostname ${d.hostname}`, '!'];
+  if (d instanceof Router && d.ipv6Routing) out.push('ipv6 unicast-routing', '!');
   if (d instanceof Switch) {
+    const stp = d.stp;
+    out.push(`spanning-tree mode ${stp.mode}`);
+    if (stp.portfastDefault) out.push('spanning-tree portfast default');
+    if (stp.bpduGuardDefault) out.push('spanning-tree portfast bpduguard default');
+    if (stp.disabled.size) out.push(`no spanning-tree vlan ${formatVlanList(stp.disabled)}`);
+    const byPriority = new Map<number, number[]>();
+    for (const [v, p] of stp.priorities) byPriority.set(p, [...(byPriority.get(p) ?? []), v]);
+    for (const [p, vlans] of [...byPriority].sort(([a], [b]) => a - b)) out.push(`spanning-tree vlan ${formatVlanList(vlans)} priority ${p}`);
+    out.push('!');
     if (d.ipRouting) out.push('ip routing', '!');
     for (const [id, name] of [...d.vlans].sort(([a], [b]) => a - b)) {
       if (id === 1) continue;
@@ -193,14 +209,33 @@ export function runningConfig(d: Device & IpDevice): string {
     out.push(`interface ${i.name}`);
     if (i.description) out.push(` description ${i.description}`);
     if (i.kind === 'subinterface' && i.encapVlan !== undefined) out.push(` encapsulation dot1Q ${i.encapVlan}${i.encapNative ? ' native' : ''}`);
-    if (d instanceof Switch && i.kind === 'physical') {
+    if (d instanceof Switch && (i.kind === 'physical' || i.kind === 'port-channel')) {
       if (i.accessVlan !== 1) out.push(` switchport access vlan ${i.accessVlan}`);
       if (i.nativeVlan !== 1) out.push(` switchport trunk native vlan ${i.nativeVlan}`);
       if (i.allowedVlans !== 'all') out.push(` switchport trunk allowed vlan ${formatVlanList(i.allowedVlans)}`);
       if (i.mode === 'trunk') out.push(' switchport mode trunk');
       else if (i.mode === 'access') out.push(' switchport mode access');
+      const ps = i.portSecurity;
+      if (ps?.enabled) {
+        out.push(' switchport port-security');
+        if (ps.maximum !== 1) out.push(` switchport port-security maximum ${ps.maximum}`);
+        if (ps.violation !== 'shutdown') out.push(` switchport port-security violation ${ps.violation}`);
+        if (ps.sticky) out.push(' switchport port-security mac-address sticky');
+      }
+      for (const a of ps?.addresses ?? []) {
+        if (a.type !== 'dynamic') out.push(` switchport port-security mac-address ${a.type === 'sticky' ? 'sticky ' : ''}${a.mac}`);
+      }
+      if (i.channelGroup) out.push(` channel-group ${i.channelGroup.id} mode ${i.channelGroup.mode}`);
+      const st = i.stp;
+      if (st?.portfast === true) out.push(' spanning-tree portfast');
+      if (st?.portfast === false) out.push(' spanning-tree portfast disable');
+      if (st?.bpduGuard !== undefined) out.push(` spanning-tree bpduguard ${st.bpduGuard ? 'enable' : 'disable'}`);
+      if (st?.guardRoot) out.push(' spanning-tree guard root');
+      if (st?.cost) out.push(` spanning-tree cost ${st.cost}`);
+      if (st?.priority !== undefined) out.push(` spanning-tree port-priority ${st.priority}`);
     } else {
       out.push(i.dhcpClient ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
+      out.push(...ipv6InterfaceConfig(i));
     }
     for (const h of i.helpers ?? []) out.push(` ip helper-address ${h}`);
     if (i.accessGroup?.in) out.push(` ip access-group ${i.accessGroup.in} in`);
@@ -230,6 +265,7 @@ export function runningConfig(d: Device & IpDevice): string {
     const via = [r.exitInterface, r.nextHop].filter(Boolean).join(' ');
     out.push(`ip route ${r.network} ${prefixToMask(r.prefix)} ${via}${r.ad !== 1 ? ` ${r.ad}` : ''}`);
   }
+  for (const r of d.ipv6.statics) out.push(ipv6RouteConfig(r));
   if (d instanceof Router) {
     for (const acl of d.acls.values()) {
       if (/^\d+$/.test(acl.name)) {
@@ -276,7 +312,9 @@ export function formatIosPing(dst: string, results: PingResult[]): string {
 }
 
 export function formatIosTraceroute(t: TracerouteResult): string {
-  const lines = ['Type escape sequence to abort.', `Tracing the route to ${t.destination}`, 'VRF info: (vrf in name/id, vrf out name/id)'];
+  // IOS prints IPv6 addresses in upper case.
+  const show = (a: string) => (a.includes(':') ? a.toUpperCase() : a);
+  const lines = ['Type escape sequence to abort.', `Tracing the route to ${show(t.destination)}`, 'VRF info: (vrf in name/id, vrf out name/id)'];
   for (const hop of t.hops) {
     let line = `${String(hop.ttl).padStart(3)}`;
     let last: string | undefined;
@@ -285,7 +323,7 @@ export function formatIosTraceroute(t: TracerouteResult): string {
         line += ' *';
         continue;
       }
-      if (p.from !== last) line += ` ${p.from}`;
+      if (p.from !== last) line += ` ${show(p.from)}`;
       last = p.from;
       line += p.unreachable ? ' !H' : ` ${p.rttMs} msec`;
     }

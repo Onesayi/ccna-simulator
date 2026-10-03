@@ -7,8 +7,9 @@ import {
   type Ipv4Address,
   type MacAddress,
 } from '../core/addressing';
-import type { ArpPacket, Frame, IpPacket, UdpPacket } from '../core/frames';
+import type { ArpPacket, Frame, IpPacket, Packet, UdpPacket } from '../core/frames';
 import type { ScheduledEvent } from '../core/scheduler';
+import { Ipv6Stack } from '../ipv6/stack';
 import { Device, type Interface } from './device';
 
 /** How long a ping or traceroute probe waits for an answer (IOS and Windows both use 2 seconds). */
@@ -131,10 +132,49 @@ export abstract class IpDevice extends Device {
   /** TCP ports with a service listening (SYN gets SYN-ACK; anything else gets RST). */
   protected readonly listeningPorts: readonly number[] = [];
 
+  /** Hop limit for locally originated IPv6 packets: 64 on IOS, 128 on Windows. */
+  protected readonly ipv6HopLimit: number = 64;
+  readonly ipv6: Ipv6Stack;
+
   private pendingArp = new Map<Ipv4Address, IpPacket[]>();
   private waiters = new Map<string, Waiter>();
   private echoId = 1;
   private nextPort = 49152;
+
+  constructor(hostname: string) {
+    super(hostname);
+    const device = this;
+    this.ipv6 = new Ipv6Stack({
+      interfaces: this.interfaces,
+      routing: () => this.routesIpv6,
+      get hopLimit() {
+        return device.ipv6HopLimit;
+      },
+      transmit: (iface, mac, p) => this.transmitL3(iface, mac, p),
+      schedule: (ms, label, run) => this.schedule(ms, label, run),
+      cancel: (e) => this.cancel(e),
+      now: () => this.now,
+    });
+  }
+
+  /** `ipv6 unicast-routing`: only routers forward IPv6 and send router advertisements. */
+  protected get routesIpv6(): boolean {
+    return false;
+  }
+
+  override tick(): void {
+    this.ipv6.tick();
+  }
+
+  /** Pings an IPv4 or IPv6 address. */
+  pingAny(dst: string, count = 4, timeoutMs = ICMP_TIMEOUT_MS): PingResult[] {
+    return dst.includes(':') ? this.ipv6.ping(dst, count, timeoutMs) : this.ping(dst, count, timeoutMs);
+  }
+
+  /** Traceroute to an IPv4 or IPv6 address. */
+  tracerouteAny(dst: string, maxHops = 30, probesPerHop = 3, timeoutMs = ICMP_TIMEOUT_MS): TracerouteResult {
+    return dst.includes(':') ? this.ipv6.traceroute(dst, maxHops, probesPerHop, timeoutMs) : this.traceroute(dst, maxHops, probesPerHop, timeoutMs);
+  }
 
   /** Interfaces that are up and have an address. */
   ipInterfaces(): Interface[] {
@@ -394,9 +434,11 @@ export abstract class IpDevice extends Device {
 
   /** Entry point for frames that reached this device's Layer 3 on `iface`. */
   protected receiveL3(iface: Interface, frame: Frame): void {
+    const p = frame.payload;
+    if (p.kind === 'icmpv6') return this.ipv6.receive(iface, p, frame);
+    if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp') return; // switch-to-switch protocols
     const multicast = this.acceptsMulticast(frame.dst, iface);
     if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !multicast) return;
-    const p = frame.payload;
     if (p.kind === 'arp') return this.handleArp(iface, p);
     const dhcp = p.kind === 'udp' && p.dhcp !== undefined;
     // A DHCP client has no address yet, so DHCP is the one thing an unaddressed interface takes.
@@ -518,7 +560,7 @@ export abstract class IpDevice extends Device {
   }
 
   /** Puts a packet on the wire from a Layer 3 interface. Sub-interfaces tag; switches override for SVIs. */
-  protected transmitL3(iface: Interface, dstMac: MacAddress, payload: IpPacket | ArpPacket): void {
+  protected transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet): void {
     if (iface.kind === 'subinterface') {
       const parent = iface.parent!;
       const frame: Frame = { src: iface.mac, dst: dstMac, payload };

@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { openDevice, typeLines } from './helpers';
+import { openDevice, terminal, typeLines } from './helpers';
 
 const objective = (page: import('@playwright/test').Page, text: string) =>
   page.locator('.objectives li', { hasText: text });
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(24);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(33);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 
@@ -65,4 +65,28 @@ test('deep links open a lab, and unknown labs fall back to the catalog', async (
   await page.goto('./#/labs/no-such-lab');
   await expect(page).toHaveURL(/#\/labs$/);
   await expect(page.locator('.lab-catalog')).toBeVisible();
+});
+
+test('spanning tree blocks a parallel link until EtherChannel bundles both', async ({ page }) => {
+  await page.goto('./#/labs/etherchannel-lacp');
+  await expect(page.locator('.react-flow__edge.link-blocked')).toHaveCount(1);
+  await openDevice(page, 'SW1');
+  await typeLines(page, 'enable', 'conf t', 'interface range g0/1 - 2', 'channel-group 1 mode active', 'end');
+  await openDevice(page, 'SW2');
+  await typeLines(page, 'enable', 'conf t', 'interface range g0/1 - 2', 'channel-group 1 mode passive', 'end');
+  await expect(objective(page, 'SW2 bundles both links into Po1 with LACP')).toHaveClass(/pass/);
+  await expect(page.locator('.react-flow__edge.link-blocked')).toHaveCount(0);
+  await expect(page.locator('.react-flow__edge.link-bundled')).toHaveCount(2);
+  await typeLines(page, 'show etherchannel summary');
+  await expect(terminal(page)).toContainText('Po1(SU)');
+});
+
+test('a PC gets an IPv6 address with SLAAC', async ({ page }) => {
+  await page.goto('./#/labs/ipv6-addressing');
+  await openDevice(page, 'R1');
+  await typeLines(page, 'enable', 'conf t', 'ipv6 unicast-routing', 'int g0/1', 'ipv6 address 2001:db8:acad:2::/64 eui-64', 'no shutdown', 'end');
+  await openDevice(page, 'PC2');
+  await typeLines(page, 'ipv6config autoconfig');
+  await expect(terminal(page)).toContainText('IPv6 Address....................: 2001:DB8:ACAD:2:');
+  await expect(objective(page, 'PC2 built its own address with SLAAC')).toHaveClass(/pass/);
 });
