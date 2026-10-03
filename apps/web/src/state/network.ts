@@ -102,13 +102,17 @@ interface NetworkState {
   /** One shell per device so the CLI mode survives switching between consoles. */
   shells: Map<string, Shell>;
   selectedId?: string;
-  /** Bumped after anything changes engine state so views re-read it. */
+  /** Bumped after anything changes engine state or the canvas so views re-read it. */
   version: number;
+  /** Bumped only when the network itself may have changed (commands, cabling), not when a node is dragged. */
+  configVersion: number;
   error?: string;
   select: (id: string | undefined) => void;
   shellFor: (device: Device) => Shell;
-  /** Call after running a command: the engine may have changed. */
-  touch: () => void;
+  /** Call after running a command: the engine may have changed. Pass `false` for cosmetic changes. */
+  touch: (config?: boolean) => void;
+  /** Swaps in another network, such as a lab's. */
+  load: (topology: Topology, positions: Map<string, XY>) => void;
   addDevice: (kind: DeviceKind, at?: XY) => void;
   removeDevice: (id: string) => void;
   connect: (aId: string, bId: string) => void;
@@ -122,6 +126,7 @@ export const useNetwork = create<NetworkState>((set, get) => ({
   ...demoTopology(),
   shells: new Map(),
   version: 0,
+  configVersion: 0,
   select: (id) => set({ selectedId: id }),
   shellFor: (device) => {
     const { shells } = get();
@@ -129,14 +134,16 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     if (!shell) shells.set(device.id, (shell = createShell(device)));
     return shell;
   },
-  touch: () => set((s) => ({ version: s.version + 1 })),
+  touch: (config = true) => set((s) => ({ version: s.version + 1, configVersion: s.configVersion + (config ? 1 : 0) })),
+  load: (topology, positions) =>
+    set((s) => ({ topology, positions, shells: new Map(), selectedId: undefined, error: undefined, version: s.version + 1, configVersion: s.configVersion + 1 })),
   addDevice: (kind, at) => {
     const { topology, positions } = get();
     const hostname = nextHostname(topology, kind);
     const device = topology.add(kind === 'router' ? new Router(hostname) : kind === 'switch' ? new Switch(hostname) : new Pc(hostname));
     const n = topology.devices.size;
     positions.set(device.id, at ?? { x: 60 + (n % 5) * 140, y: 480 + Math.floor(n / 5) * 120 });
-    set((s) => ({ version: s.version + 1, selectedId: device.id, error: undefined }));
+    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, selectedId: device.id, error: undefined }));
   },
   removeDevice: (id) => {
     const { topology, positions, shells, selectedId } = get();
@@ -145,7 +152,7 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     topology.remove(device);
     positions.delete(id);
     shells.delete(id);
-    set((s) => ({ version: s.version + 1, selectedId: selectedId === id ? undefined : selectedId }));
+    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, selectedId: selectedId === id ? undefined : selectedId }));
   },
   connect: (aId, bId) => {
     const { topology } = get();
@@ -156,17 +163,20 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     const [pb] = b.freePorts();
     if (!pa || !pb) return set({ error: `${!pa ? a.hostname : b.hostname} has no free ports` });
     topology.connect(pa, pb);
-    set((s) => ({ version: s.version + 1, error: undefined }));
+    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, error: undefined }));
   },
   disconnect: (linkId) => {
     const { topology } = get();
     const link = topology.links.find((l) => l.id === linkId);
     if (link) topology.disconnect(link);
-    set((s) => ({ version: s.version + 1 }));
+    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1 }));
   },
   move: (id, at) => {
     get().positions.set(id, at);
   },
-  loadDemo: () => set((s) => ({ ...demoTopology(), shells: new Map(), selectedId: undefined, version: s.version + 1, error: undefined })),
-  clear: () => set((s) => ({ topology: new Topology(), positions: new Map(), shells: new Map(), selectedId: undefined, version: s.version + 1, error: undefined })),
+  loadDemo: () => {
+    const { topology, positions } = demoTopology();
+    get().load(topology, positions);
+  },
+  clear: () => get().load(new Topology(), new Map()),
 }));

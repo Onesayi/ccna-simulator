@@ -10,3 +10,8 @@ export * from './devices/pc';
 export * from './cli/session';
 export * from './cli/show';
 export * from './cli/pc-shell';
+export * from './labs/types';
+export * from './labs/checks';
+export * from './labs/run';
+export * from './labs/progress';
+export * from './labs/catalog';

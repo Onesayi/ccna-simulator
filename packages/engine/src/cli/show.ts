@@ -1,5 +1,5 @@
 import { classfulPrefix, networkAddress, prefixToMask } from '../core/addressing';
-import { shortName, type Device, type Interface } from '../devices/device';
+import { peerUp, shortName, type Device, type Interface } from '../devices/device';
 import type { IpDevice, PingResult, Route, TracerouteResult } from '../devices/ip-device';
 import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
@@ -8,7 +8,7 @@ import { Switch } from '../devices/switch';
 
 export function interfaceStatus(i: Interface): { status: string; protocol: string } {
   if (!i.adminUp) return { status: 'administratively down', protocol: 'down' };
-  const linkUp = i.kind === 'physical' ? i.link !== undefined : i.kind === 'subinterface' ? i.parent!.isUp : true;
+  const linkUp = i.kind === 'physical' ? peerUp(i) : i.kind === 'subinterface' ? i.parent!.isUp : true;
   return { status: linkUp ? 'up' : 'down', protocol: i.isUp ? 'up' : 'down' };
 }
 

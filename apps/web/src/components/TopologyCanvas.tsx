@@ -87,7 +87,7 @@ export function TopologyCanvas() {
         for (const c of changes) {
           if (c.type === 'position' && c.position) move(c.id, c.position);
         }
-        if (changes.some((c) => c.type === 'position')) useNetwork.getState().touch();
+        if (changes.some((c) => c.type === 'position')) useNetwork.getState().touch(false);
       }}
       onConnect={(c) => connect(c.source, c.target)}
       onNodesDelete={(ns) => ns.forEach((n) => removeDevice(n.id))}
