@@ -63,12 +63,18 @@ export class LabRun {
     }
     for (const spec of lab.topology.devices) {
       const d = this.device(spec.hostname);
-      if (d instanceof Pc && spec.ip) {
+      if (d instanceof Pc && spec.ip && spec.ip !== 'dhcp') {
         const [address = '', len = '24'] = spec.ip.split('/');
         d.configure(address, parsePrefix(len), spec.gateway);
       }
       if (spec.config) configure(d, spec.config);
     }
+    // DHCP clients ask once the network is built, as if just powered on.
+    for (const spec of lab.topology.devices) {
+      const d = this.device(spec.hostname);
+      if (d instanceof Pc && spec.ip === 'dhcp') d.renew();
+    }
+    this.topology.converge();
   }
 
   device(labName: string): Device {

@@ -2,6 +2,8 @@ import { classfulPrefix, networkAddress, prefixToMask } from '../core/addressing
 import { peerUp, shortName, type Device, type Interface } from '../devices/device';
 import type { IpDevice, PingResult, Route, TracerouteResult } from '../devices/ip-device';
 import { Router } from '../devices/router';
+import { ospfConfig } from '../routing/ospf';
+import { formatAclEntry } from '../services/acl';
 import { Switch } from '../devices/switch';
 
 /** Formatters for IOS show commands and ping/traceroute output. Pure functions of engine state. */
@@ -30,18 +32,27 @@ const ROUTE_CODES = `Codes: L - local, C - connected, S - static, R - RIP, M - m
        o - ODR, P - periodic downloaded static route, H - NHRP, l - LISP
        + - replicated route, % - next hop override`;
 
-/** One route line. Inside a group the code column is wider, and single-mask groups drop the prefix. */
-function routeLine(r: Route, indent: boolean, showPrefix = true): string {
-  const code = r.code + (r.prefix === 0 && r.code === 'S' ? '*' : '');
-  const dest = `${code.padEnd(indent ? 9 : 6)}${r.network}${showPrefix ? `/${r.prefix}` : ''}`;
-  if (r.code !== 'S') return `${dest} is directly connected, ${r.iface!.name}`;
-  if (!r.nextHop) return `${dest} is directly connected, ${r.iface!.name}`;
-  return `${dest} [${r.ad}/${r.metric}] via ${r.nextHop}${r.iface ? `, ${r.iface.name}` : ''}`;
+function age(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
-export function showIpRoute(d: IpDevice): string {
-  const table = d.routingTable();
-  const glr = d.gatewayOfLastResort(table);
+/** One route line. Inside a group the code column is wider, and single-mask groups drop the prefix. */
+function routeLine(r: Route, indent: boolean, showPrefix: boolean, now: number, continuation: boolean): string {
+  const code = r.code + (r.prefix === 0 && r.code !== 'C' && r.code !== 'L' ? '*' : '') + (r.external ? 'E2' : '');
+  const dest = `${code.padEnd(indent ? 9 : 6)}${r.network}${showPrefix ? `/${r.prefix}` : ''}`;
+  if (r.code === 'C' || r.code === 'L' || !r.nextHop) return `${dest} is directly connected, ${r.iface!.name}`;
+  const learned = r.learnedAt !== undefined ? `, ${age(now - r.learnedAt)}` : '';
+  const via = `[${r.ad}/${r.metric}] via ${r.nextHop}${learned}${r.iface ? `, ${r.iface.name}` : ''}`;
+  // Equal-cost paths: IOS prints the extra next hops under the first, aligned with its "[AD/metric]".
+  return continuation ? `${' '.repeat(dest.length + 1)}${via}` : `${dest} ${via}`;
+}
+
+export function showIpRoute(d: IpDevice, codes?: string[]): string {
+  const full = d.routingTable();
+  const table = codes ? full.filter((r) => codes.includes(r.code)) : full;
+  const now = d.network?.scheduler.now ?? 0;
+  const glr = d.gatewayOfLastResort(full);
   const lines = [ROUTE_CODES, ''];
   if (!glr) lines.push('Gateway of last resort is not set');
   else if (glr.nextHop) lines.push(`Gateway of last resort is ${glr.nextHop} to network 0.0.0.0`);
@@ -60,8 +71,14 @@ export function showIpRoute(d: IpDevice): string {
   }
   for (const [key, routes] of groups) {
     const [net = '', cp = ''] = key.split('/');
+    const render = (indent: boolean, showPrefix: boolean) =>
+      routes.map((r, k) => {
+        const prev = routes[k - 1];
+        const same = prev !== undefined && prev.network === r.network && prev.prefix === r.prefix && prev.code === r.code;
+        return routeLine(r, indent, showPrefix, now, same);
+      });
     if (key.endsWith('#flat') || routes.every((r) => r.prefix === Number(cp))) {
-      lines.push(...routes.map((r) => routeLine(r, false)));
+      lines.push(...render(false, true));
       continue;
     }
     const masks = new Set(routes.map((r) => r.prefix));
@@ -69,7 +86,7 @@ export function showIpRoute(d: IpDevice): string {
     const plural = subnets > 1 ? 's' : '';
     if (masks.size === 1) lines.push(`      ${net}/${[...masks][0]} is subnetted, ${subnets} subnet${plural}`);
     else lines.push(`      ${net}/${cp} is variably subnetted, ${subnets} subnet${plural}, ${masks.size} masks`);
-    lines.push(...routes.map((r) => routeLine(r, true, masks.size > 1)));
+    lines.push(...render(true, masks.size > 1));
   }
   return lines.join('\n');
 }
@@ -159,6 +176,19 @@ export function runningConfig(d: Device & IpDevice): string {
       out.push('!');
     }
   }
+  if (d instanceof Router) {
+    for (const [lo, hi] of d.dhcpServer.excluded) out.push(`ip dhcp excluded-address ${lo}${hi !== lo ? ` ${hi}` : ''}`);
+    if (d.dhcpServer.excluded.length) out.push('!');
+    for (const pool of d.dhcpServer.pools.values()) {
+      out.push(`ip dhcp pool ${pool.name}`);
+      if (pool.network) out.push(` network ${pool.network} ${prefixToMask(pool.prefix!)}`);
+      if (pool.defaultRouter) out.push(` default-router ${pool.defaultRouter}`);
+      if (pool.dns) out.push(` dns-server ${pool.dns}`);
+      if (pool.domain) out.push(` domain-name ${pool.domain}`);
+      if (pool.leaseDays !== 1) out.push(` lease ${pool.leaseDays}`);
+      out.push('!');
+    }
+  }
   for (const i of d.interfaces) {
     out.push(`interface ${i.name}`);
     if (i.description) out.push(` description ${i.description}`);
@@ -170,16 +200,46 @@ export function runningConfig(d: Device & IpDevice): string {
       if (i.mode === 'trunk') out.push(' switchport mode trunk');
       else if (i.mode === 'access') out.push(' switchport mode access');
     } else {
-      out.push(i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
+      out.push(i.dhcpClient ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
     }
+    for (const h of i.helpers ?? []) out.push(` ip helper-address ${h}`);
+    if (i.accessGroup?.in) out.push(` ip access-group ${i.accessGroup.in} in`);
+    if (i.accessGroup?.out) out.push(` ip access-group ${i.accessGroup.out} out`);
+    if (i.nat) out.push(` ip nat ${i.nat}`);
+    if (i.bandwidth) out.push(` bandwidth ${i.bandwidth}`);
+    const o = i.ospf;
+    if (o?.process) out.push(` ip ospf ${o.process.pid} area ${o.process.area}`);
+    if (o?.network) out.push(` ip ospf network ${o.network}`);
+    if (o?.cost) out.push(` ip ospf cost ${o.cost}`);
+    if (o?.priority !== undefined) out.push(` ip ospf priority ${o.priority}`);
+    if (o?.helloInterval) out.push(` ip ospf hello-interval ${o.helloInterval}`);
+    if (o?.deadInterval) out.push(` ip ospf dead-interval ${o.deadInterval}`);
     if (!i.adminUp) out.push(' shutdown');
     if (d instanceof Router && i.kind === 'physical') out.push(' duplex auto', ' speed auto');
     out.push('!');
   }
+  if (d instanceof Router) for (const p of d.ospf.values()) out.push(...ospfConfig(p));
   if (d instanceof Switch && d.defaultGateway) out.push(`ip default-gateway ${d.defaultGateway}`);
+  if (d instanceof Router) {
+    const nat = d.nat;
+    for (const pool of nat.pools.values()) out.push(`ip nat pool ${pool.name} ${pool.start} ${pool.end} netmask ${prefixToMask(pool.prefix)}`);
+    for (const r of nat.rules) out.push(`ip nat inside source list ${r.acl} ${r.iface ? `interface ${r.iface}` : `pool ${r.pool}`}${r.overload ? ' overload' : ''}`);
+    for (const st of nat.statics) out.push(`ip nat inside source static ${st.local} ${st.global}`);
+  }
   for (const r of d.staticRoutes) {
     const via = [r.exitInterface, r.nextHop].filter(Boolean).join(' ');
     out.push(`ip route ${r.network} ${prefixToMask(r.prefix)} ${via}${r.ad !== 1 ? ` ${r.ad}` : ''}`);
+  }
+  if (d instanceof Router) {
+    for (const acl of d.acls.values()) {
+      if (/^\d+$/.test(acl.name)) {
+        out.push('!');
+        for (const e of acl.entries) out.push(`access-list ${acl.name} ${formatAclEntry(e, acl.type, true)}`);
+      } else {
+        out.push('!', `ip access-list ${acl.type} ${acl.name}`);
+        for (const e of acl.entries) out.push(` ${e.action === 'remark' ? '' : `${e.seq} `}${formatAclEntry(e, acl.type, true)}`);
+      }
+    }
   }
   out.push('!', 'line con 0', '!', 'line vty 0 4', ' login', '!', 'end');
   const text = out.join('\n');
@@ -232,4 +292,38 @@ export function formatIosTraceroute(t: TracerouteResult): string {
     lines.push(line);
   }
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------- show ip interface and logging
+
+export function showIpInterface(i: Interface): string {
+  const { status, protocol } = interfaceStatus(i);
+  const lines = [`${i.name} is ${status}, line protocol is ${protocol}`];
+  if (!i.ip) return [...lines, '  Internet protocol processing disabled'].join('\n');
+  lines.push(`  Internet address is ${i.ip.address}/${i.ip.prefix}`, '  Broadcast address is 255.255.255.255');
+  if (i.dhcpClient) lines.push('  Address determined by DHCP');
+  else lines.push('  Address determined by non-volatile memory');
+  lines.push('  MTU is 1500 bytes');
+  if (i.helpers?.length) lines.push(`  Helper addresses are ${i.helpers.join(' ')}`);
+  else lines.push('  Helper address is not set');
+  lines.push(`  Outgoing Common access list is not set`, `  Outgoing access list is ${i.accessGroup?.out ?? 'not set'}`);
+  lines.push(`  Inbound Common access list is not set`, `  Inbound  access list is ${i.accessGroup?.in ?? 'not set'}`);
+  lines.push(`  Proxy ARP is enabled`);
+  lines.push(`  IP NAT ${i.nat ? `${i.nat === 'inside' ? 'Inside' : 'Outside'} interface` : 'disabled'}`);
+  return lines.join('\n');
+}
+
+export function showLogging(d: Device): string {
+  return [
+    'Syslog logging: enabled (0 messages dropped, 0 messages rate-limited, 0 flushes, 0 overruns, xml disabled, filtering disabled)',
+    '',
+    `    Console logging: level debugging, ${d.log.length} messages logged, xml disabled,`,
+    '                     filtering disabled',
+    `    Buffer logging:  level debugging, ${d.log.length} messages logged, xml disabled,`,
+    '                    filtering disabled',
+    '',
+    'Log Buffer (8192 bytes):',
+    '',
+    ...d.log,
+  ].join('\n');
 }

@@ -87,4 +87,22 @@ export class Topology {
   run(): number {
     return this.scheduler.runUntilIdle();
   }
+
+  /**
+   * Lets control-plane protocols (OSPF) catch up after a change. Each round stands in for one
+   * hello interval: every device sends its periodic messages, the network runs, then each device
+   * reacts (expires silent neighbors, elects a DR, floods LSAs, runs SPF). Rounds repeat until
+   * nothing changes, so the CLI and the grader always see a converged network.
+   */
+  converge(maxRounds = 8): void {
+    this.run();
+    for (let round = 0; round < maxRounds; round++) {
+      for (const d of this.devices.values()) d.tick();
+      this.run();
+      let changed = false;
+      for (const d of this.devices.values()) changed = d.settle() || changed;
+      this.run();
+      if (!changed) break;
+    }
+  }
 }

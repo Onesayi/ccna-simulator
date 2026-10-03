@@ -15,3 +15,8 @@ export * from './labs/checks';
 export * from './labs/run';
 export * from './labs/progress';
 export * from './labs/catalog';
+export * from './cli/common';
+export * from './routing/ospf';
+export * from './services/acl';
+export * from './services/dhcp';
+export * from './services/nat';

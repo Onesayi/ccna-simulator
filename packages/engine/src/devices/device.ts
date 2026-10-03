@@ -38,6 +38,28 @@ export interface Interface {
   allowedVlans: Set<number> | 'all';
   nativeVlan: number;
   description?: string;
+  /** `bandwidth` in kbps, used for the OSPF cost. Defaults to the port speed. */
+  bandwidth?: number;
+  /** Per-interface OSPF settings (`ip ospf ...`). */
+  ospf?: InterfaceOspfConfig;
+  /** `ip access-group <acl> in|out`. */
+  accessGroup?: { in?: string; out?: string };
+  /** `ip nat inside` / `ip nat outside`. */
+  nat?: 'inside' | 'outside';
+  /** `ip helper-address`: DHCP relay targets. */
+  helpers?: Ipv4Address[];
+  /** `ip address dhcp`: the address comes from a DHCP server. */
+  dhcpClient?: boolean;
+}
+
+export interface InterfaceOspfConfig {
+  /** `ip ospf <pid> area <area>`: enables OSPF here without a `network` statement. */
+  process?: { pid: number; area: number };
+  cost?: number;
+  priority?: number;
+  helloInterval?: number;
+  deadInterval?: number;
+  network?: 'broadcast' | 'point-to-point';
 }
 
 /** Ethernet only comes up when both ends of the cable are enabled; a shut far end leaves us down/down. */
@@ -142,6 +164,14 @@ export abstract class Device {
   }
 
   abstract receive(on: Interface, frame: Frame): void;
+
+  /** Start of a convergence round: send periodic control-plane messages (OSPF hellos). */
+  tick(): void {}
+
+  /** End of a convergence round. Returns true when state changed and another round is needed. */
+  settle(): boolean {
+    return false;
+  }
 }
 
 const IF_PREFIXES: Record<string, string> = {

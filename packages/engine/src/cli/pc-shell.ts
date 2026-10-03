@@ -5,12 +5,16 @@ import { Pc } from '../devices/pc';
 import { CliSession, type Shell } from './session';
 
 const PC_HELP = `Available commands:
-  ipconfig                               Show the IP configuration
+  ipconfig [/all]                        Show the IP configuration
   ipconfig <ip> <mask|/len> [gateway]    Set a static IP address (Packet Tracer style)
+  ipconfig /renew                        Get an address from DHCP
+  ipconfig /release                      Give the DHCP address back
   ping [-n count] <ip>                   Send ICMP echo requests
   tracert <ip>                           Trace the route to a host
   arp -a                                 Show the ARP cache
-  arp -d                                 Clear the ARP cache`;
+  arp -d                                 Clear the ARP cache
+  telnet <ip> [port]                     Open a TCP connection (default port 23)
+  curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)`;
 
 /** A Windows-flavoured command prompt for PCs, close to Packet Tracer's. */
 export class PcShell implements Shell {
@@ -21,6 +25,12 @@ export class PcShell implements Shell {
   }
 
   execute(line: string): string {
+    const out = this.run(line);
+    this.pc.network?.converge();
+    return out;
+  }
+
+  private run(line: string): string {
     const [cmd = '', ...args] = line.trim().split(/\s+/);
     switch (cmd.toLowerCase()) {
       case '':
@@ -29,7 +39,7 @@ export class PcShell implements Shell {
       case 'help':
         return PC_HELP;
       case 'ipconfig':
-        return args.length ? this.setIp(args) : this.ipconfig();
+        return this.ipconfigCommand(args);
       case 'ping':
         return this.ping(args);
       case 'tracert':
@@ -37,24 +47,52 @@ export class PcShell implements Shell {
         return this.tracert(args);
       case 'arp':
         return this.arp(args);
+      case 'telnet':
+        return this.telnet(args);
+      case 'curl':
+        return this.curl(args);
       default:
         return `Invalid Command.`;
     }
   }
 
-  private ipconfig(): string {
-    const ip = this.pc.nic.ip;
-    return [
-      '',
-      'Ethernet0 Connection:(default port)',
-      '',
-      '   Connection-specific DNS Suffix..: ',
-      `   Physical Address................: ${this.pc.nic.mac.toUpperCase()}`,
-      `   IPv4 Address....................: ${ip?.address ?? '0.0.0.0'}`,
+  private ipconfigCommand(args: string[]): string {
+    const flag = args[0]?.toLowerCase();
+    if (!flag) return this.ipconfig(false);
+    if (flag === '/all') return this.ipconfig(true);
+    if (flag === '/renew') {
+      this.pc.renew();
+      this.pc.network?.run();
+      if (this.pc.dhcpState !== 'bound') {
+        return `${this.ipconfig(false)}\nAn error occurred while renewing interface Ethernet0 : unable to contact your DHCP server. Request has timed out.`;
+      }
+      return this.ipconfig(false);
+    }
+    if (flag === '/release') {
+      this.pc.release();
+      this.pc.network?.run();
+      return this.ipconfig(false);
+    }
+    return this.setIp(args);
+  }
+
+  private ipconfig(all: boolean): string {
+    const pc = this.pc;
+    const ip = pc.nic.ip;
+    const lines = ['', 'Ethernet0 Connection:(default port)', '', `   Connection-specific DNS Suffix..: ${pc.lease?.domain ?? ''}`];
+    lines.push(`   Physical Address................: ${pc.nic.mac.toUpperCase()}`);
+    lines.push(
+      `   ${pc.apipa ? 'Autoconfiguration IPv4 Address..' : 'IPv4 Address....................'}: ${ip?.address ?? '0.0.0.0'}`,
       `   Subnet Mask.....................: ${ip ? prefixToMask(ip.prefix) : '0.0.0.0'}`,
-      `   Default Gateway.................: ${this.pc.defaultGateway ?? '0.0.0.0'}`,
-      '',
-    ].join('\n');
+      `   Default Gateway.................: ${pc.defaultGateway ?? '0.0.0.0'}`,
+    );
+    if (all) {
+      lines.push(`   DHCP Enabled....................: ${pc.dhcp ? 'Yes' : 'No'}`);
+      if (pc.lease?.serverId) lines.push(`   DHCP Server.....................: ${pc.lease.serverId}`);
+      lines.push(`   DNS Servers.....................: ${pc.dnsServer ?? '0.0.0.0'}`);
+    }
+    lines.push('');
+    return lines.join('\n');
   }
 
   private setIp(args: string[]): string {
@@ -92,6 +130,33 @@ export class PcShell implements Shell {
     const result = this.pc.traceroute(dst);
     this.pc.network?.run();
     return formatWindowsTracert(result);
+  }
+
+  private connect(dst: string, port: number) {
+    const result = this.pc.connect(dst, port);
+    this.pc.network?.run();
+    return result;
+  }
+
+  private telnet(args: string[]): string {
+    const [dst, p = '23'] = args;
+    const port = Number(p);
+    if (!dst || !isValidIp(dst) || !Number.isInteger(port) || port < 1 || port > 65535) return 'Usage: telnet <ip> [port]';
+    const r = this.connect(dst, port);
+    if (r.status === 'open') return `Trying ${dst} ...Open\n\n[Connection to ${dst} closed by foreign host]`;
+    return `Trying ${dst} ...\n% Connection ${r.status === 'refused' ? 'refused by remote host' : 'timed out; remote host not responding'}`;
+  }
+
+  private curl(args: string[]): string {
+    const m = /^(?:(https?):\/\/)?([\d.]+)(?::(\d+))?\/?$/i.exec(args[0] ?? '');
+    if (!m || !isValidIp(m[2]!)) return `curl: (3) URL using bad/illegal format or missing URL`;
+    const host = m[2]!;
+    const port = m[3] ? Number(m[3]) : m[1]?.toLowerCase() === 'https' ? 443 : 80;
+    const r = this.connect(host, port);
+    if (r.status === 'open') return `<html><body><h1>It works!</h1><p>Served by ${host}:${port}</p></body></html>`;
+    if (r.status === 'refused') return `curl: (7) Failed to connect to ${host} port ${port}: Connection refused`;
+    if (r.status === 'unreachable' || r.status === 'no-route') return `curl: (7) Failed to connect to ${host} port ${port}: No route to host`;
+    return `curl: (28) Failed to connect to ${host} port ${port}: Timed out`;
   }
 
   private arp(args: string[]): string {

@@ -1,4 +1,4 @@
-import { DOMAINS, LABS, type ObjectiveResult } from '@ccna-sim/engine';
+import { DOMAINS, LABS, PROBE_CHECKS, type ObjectiveResult } from '@ccna-sim/engine';
 import { useStudy } from '../state/study';
 import { Difficulty } from './LabCatalog';
 import { Inline, RichText } from './RichText';
@@ -9,7 +9,7 @@ function Objective({ result, index }: { result: ObjectiveResult; index: number }
   const { hints, revealHint, answer, run } = useStudy();
   const { objective, status, detail } = result;
   const { check } = objective;
-  const isProbe = check.type === 'ping' || check.type === 'traceroute';
+  const isProbe = PROBE_CHECKS.includes(check.type);
 
   if (check.type === 'quiz') {
     const chosen = run?.answers.get(index);

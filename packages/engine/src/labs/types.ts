@@ -23,7 +23,7 @@ export interface LabDeviceSpec {
   kind: Device['kind'];
   /** Canvas position. */
   at: [number, number];
-  /** PCs only: "192.168.1.10/24". */
+  /** PCs only: "192.168.1.10/24", or "dhcp" to start as a DHCP client (with no server yet, that means APIPA). */
   ip?: string;
   /** PCs only. */
   gateway?: string;
@@ -54,19 +54,38 @@ export type Check =
   | { type: 'subinterface'; device: string; interface: string; vlan: number; native?: boolean }
   | { type: 'ipRouting'; device: string }
   /** A route installed in the routing table. With `absent`, passes only when no such route is installed. */
-  | { type: 'route'; device: string; network: string; prefix: number; code?: 'C' | 'L' | 'S'; nextHop?: string; absent?: boolean }
+  | { type: 'route'; device: string; network: string; prefix: number; code?: 'C' | 'L' | 'S' | 'O'; nextHop?: string; absent?: boolean }
   /** A static route as configured (installed or not), for floating statics. */
   | { type: 'staticRoute'; device: string; network: string; prefix: number; nextHop?: string; ad?: number }
   | { type: 'ping'; from: string; to: string; expect: 'success' | 'fail' }
   /** Every address in `via` answers a traceroute probe, in this order. */
   | { type: 'traceroute'; from: string; to: string; via: string[] }
+  /** An OSPF neighbor (by router ID) in the given state, FULL by default. */
+  | { type: 'ospfNeighbor'; device: string; neighbor: string; state?: 'FULL' | '2WAY' }
+  | { type: 'ospfRouterId'; device: string; routerId: string }
+  /** OSPF runs on the interface, optionally in a given DR role, passive state or priority. */
+  | { type: 'ospfInterface'; device: string; interface: string; role?: 'DR' | 'BDR' | 'DROTHER' | 'P2P'; passive?: boolean; priority?: number }
+  /** A PC holds a DHCP lease inside `network`, optionally with this default gateway. */
+  | { type: 'dhcpLease'; device: string; network: string; prefix: number; gateway?: string }
+  | { type: 'dhcpPool'; device: string; network: string; prefix: number; defaultRouter?: string }
+  /** The DHCP server will never lease this address. */
+  | { type: 'dhcpExcluded'; device: string; address: string }
+  | { type: 'helperAddress'; device: string; interface: string; address: string }
+  | { type: 'natInterface'; device: string; interface: string; side: 'inside' | 'outside' }
+  | { type: 'natStatic'; device: string; local: string; global: string }
+  /** Some `ip nat inside source list ... overload` rule exists. */
+  | { type: 'natOverload'; device: string }
+  /** An ACL applied to an interface in a direction (any ACL unless `acl` is given). */
+  | { type: 'accessGroup'; device: string; interface: string; direction: 'in' | 'out'; acl?: string }
+  /** A TCP connection to `port`: `open` when it connects, `blocked` when it does not. */
+  | { type: 'connect'; from: string; to: string; port: number; expect: 'open' | 'blocked' }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect'];
 
 export interface Objective {
   text: string;
