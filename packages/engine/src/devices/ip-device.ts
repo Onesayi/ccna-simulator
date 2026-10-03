@@ -7,7 +7,7 @@ import {
   type Ipv4Address,
   type MacAddress,
 } from '../core/addressing';
-import type { ArpPacket, Frame, IcmpPacket, IpPacket } from '../core/frames';
+import type { ArpPacket, Frame, IpPacket, UdpPacket } from '../core/frames';
 import type { ScheduledEvent } from '../core/scheduler';
 import { Device, type Interface } from './device';
 
@@ -15,6 +15,10 @@ import { Device, type Interface } from './device';
 export const ICMP_TIMEOUT_MS = 2_000;
 /** How long an unanswered ARP request stays pending before queued packets are dropped. */
 export const ARP_TIMEOUT_MS = 2_000;
+/** How long a TCP connection attempt waits for a SYN-ACK. */
+export const TCP_TIMEOUT_MS = 4_000;
+const TCP_RETRANSMIT_MS = 1_000;
+export const LIMITED_BROADCAST: Ipv4Address = '255.255.255.255';
 
 export type PingStatus = 'pending' | 'success' | 'timeout' | 'unreachable' | 'ttl-exceeded' | 'no-route';
 
@@ -48,6 +52,17 @@ export interface TracerouteResult {
   reached: boolean;
 }
 
+/** - `open`: SYN-ACK came back. `refused`: RST (nothing listening). `unreachable`: an ICMP error, such as an ACL deny. */
+export type ConnectStatus = 'pending' | 'open' | 'refused' | 'unreachable' | 'timeout' | 'no-route';
+
+export interface ConnectResult {
+  destination: Ipv4Address;
+  port: number;
+  status: ConnectStatus;
+  /** Who sent the ICMP error, for `unreachable`. */
+  from?: Ipv4Address;
+}
+
 export interface ArpEntry {
   mac: MacAddress;
   iface: Interface;
@@ -64,7 +79,7 @@ export interface StaticRoute {
   ad: number;
 }
 
-export type RouteCode = 'C' | 'L' | 'S';
+export type RouteCode = 'C' | 'L' | 'S' | 'O';
 
 /** An entry in the routing table (RIB) as `show ip route` prints it. */
 export interface Route {
@@ -75,6 +90,10 @@ export interface Route {
   metric: number;
   nextHop?: Ipv4Address;
   iface?: Interface;
+  /** OSPF external type 2, shown as `O E2`. */
+  external?: boolean;
+  /** When a dynamic route was learned, for the age column. */
+  learnedAt?: number;
 }
 
 interface Resolved {
@@ -85,14 +104,15 @@ interface Resolved {
 }
 
 interface Waiter {
-  resolve: (reply: IcmpPacket) => void;
+  resolve: (reply: IpPacket) => void;
   timer?: ScheduledEvent;
 }
 
 /**
  * The IPv4 stack shared by PCs, routers and switches (through their SVIs): ARP, a routing
- * table with connected, local and static routes, packet forwarding with TTL handling, and
- * the ICMP behaviour behind ping and traceroute.
+ * table with connected, local, static and dynamic routes, packet forwarding with TTL handling,
+ * the ICMP behaviour behind ping and traceroute, and TCP connection attempts. Routers plug
+ * ACLs, NAT, DHCP and OSPF in through the protected hooks.
  */
 export abstract class IpDevice extends Device {
   readonly arpTable = new Map<Ipv4Address, ArpEntry>();
@@ -108,10 +128,13 @@ export abstract class IpDevice extends Device {
   protected readonly queueDuringArp: boolean = false;
   /** TTL for locally originated packets: 255 on IOS, 128 on Windows. */
   protected readonly initialTtl: number = 255;
+  /** TCP ports with a service listening (SYN gets SYN-ACK; anything else gets RST). */
+  protected readonly listeningPorts: readonly number[] = [];
 
   private pendingArp = new Map<Ipv4Address, IpPacket[]>();
   private waiters = new Map<string, Waiter>();
   private echoId = 1;
+  private nextPort = 49152;
 
   /** Interfaces that are up and have an address. */
   ipInterfaces(): Interface[] {
@@ -122,9 +145,53 @@ export abstract class IpDevice extends Device {
     return this.interfaces.some((i) => i.ip?.address === ip && i.isUp);
   }
 
+  // ---------------------------------------------------------------- hooks for routers
+
+  /** Extra static routes from the control plane, such as the default route DHCP hands a router. */
+  protected extraStatics(): StaticRoute[] {
+    return [];
+  }
+
+  /** Routes from a routing protocol, competing with statics on administrative distance. */
+  protected dynamicRoutes(): Route[] {
+    return [];
+  }
+
+  /** ACL check for a packet entering or leaving `iface`. */
+  protected permits(_iface: Interface, _dir: 'in' | 'out', _p: IpPacket): boolean {
+    return true;
+  }
+
+  /** NAT outside-to-inside, applied before routing. */
+  protected natInbound(_iface: Interface, p: IpPacket): IpPacket {
+    return p;
+  }
+
+  /** NAT inside-to-outside, applied after routing. `undefined` drops the packet (pool exhausted). */
+  protected natOutbound(_ingress: Interface, _egress: Interface, p: IpPacket): IpPacket | undefined {
+    return p;
+  }
+
+  /** Multicast groups this interface listens to (OSPF's 224.0.0.5). */
+  protected acceptsMulticast(_mac: MacAddress, _iface: Interface): boolean {
+    return false;
+  }
+
+  /** Addresses we answer ARP for besides our own, such as NAT global addresses. */
+  protected answersArpFor(_iface: Interface, _ip: Ipv4Address): boolean {
+    return false;
+  }
+
+  /** DHCP client, server and relay. Returns true when the message was consumed. */
+  protected handleDhcp(_iface: Interface, _p: UdpPacket): boolean {
+    return false;
+  }
+
+  protected handleOspf(_iface: Interface, _p: IpPacket, _frame: Frame): void {}
+
   // ---------------------------------------------------------------- routing table
 
-  /** The routing table as installed: connected and local routes plus every usable static route. */
+  /** The routing table as installed: connected and local routes plus the best static and dynamic routes. */
   routingTable(): Route[] {
     const routes: Route[] = [];
     for (const i of this.ipInterfaces()) {
@@ -135,7 +202,7 @@ export abstract class IpDevice extends Device {
     const connected = [...routes];
 
     const statics = this.forwarding
-      ? this.staticRoutes
+      ? [...this.staticRoutes, ...this.extraStatics()]
       : this.defaultGateway
         ? [{ network: '0.0.0.0', prefix: 0, nextHop: this.defaultGateway, ad: 1 }]
         : [];
@@ -147,7 +214,10 @@ export abstract class IpDevice extends Device {
       candidates.push({ code: 'S', network: s.network, prefix: s.prefix, ad: s.ad, metric: 0, nextHop: s.nextHop, iface });
     }
     // Statics that recurse through other statics are checked again now that all are known.
-    const usable = candidates.filter((r) => r.iface || this.resolveVia([...connected, ...candidates], r.nextHop!, 0));
+    const usable = [
+      ...candidates.filter((r) => r.iface || this.resolveVia([...connected, ...candidates], r.nextHop!, 0)),
+      ...(this.forwarding ? this.dynamicRoutes().filter((r) => r.iface?.isUp) : []),
+    ];
     // For each prefix only the lowest administrative distance is installed (floating statics wait).
     for (const r of usable) {
       const competing = [...routes, ...usable].filter((o) => o.network === r.network && o.prefix === r.prefix);
@@ -169,7 +239,7 @@ export abstract class IpDevice extends Device {
       if (!best || r.prefix > best.prefix || (r.prefix === best.prefix && r.ad < best.ad)) best = r;
     }
     if (!best) return undefined;
-    if (best.code !== 'S') return { route: best, iface: best.iface!, arpTarget: dst };
+    if (best.code === 'C' || best.code === 'L') return { route: best, iface: best.iface!, arpTarget: dst };
     if (best.iface) return { route: best, iface: best.iface, arpTarget: best.nextHop ?? dst };
     const via = this.resolveVia(table, best.nextHop!, depth + 1);
     return via && { route: best, iface: via.iface, arpTarget: via.arpTarget };
@@ -177,10 +247,10 @@ export abstract class IpDevice extends Device {
 
   /** The route a router advertises as its gateway of last resort, if any. */
   gatewayOfLastResort(table = this.routingTable()): Route | undefined {
-    return table.find((r) => r.prefix === 0 && r.code === 'S');
+    return table.find((r) => r.prefix === 0 && r.code !== 'C' && r.code !== 'L');
   }
 
-  // ---------------------------------------------------------------- ping and traceroute
+  // ---------------------------------------------------------------- ping, traceroute, connect
 
   /** Sends `count` echo requests one after another. Results fill in as the topology runs. */
   ping(dst: Ipv4Address, count = 4, timeoutMs = ICMP_TIMEOUT_MS): PingResult[] {
@@ -192,16 +262,16 @@ export abstract class IpDevice extends Device {
       const result = results[seq]!;
       const sentAt = this.now;
       const done = () => this.schedule(0, `ping ${dst} next`, () => sendNext(seq + 1));
-      this.expect(id, seq, timeoutMs, (reply) => {
+      this.expect(`icmp:${id}:${seq}`, timeoutMs, (reply) => {
         result.rttMs = this.now - sentAt;
         result.from = reply?.src;
         if (!reply) result.status = 'timeout';
-        else if (reply.type === 'echo-reply') Object.assign(result, { status: 'success', success: true, ttl: reply.ttl });
-        else result.status = reply.type === 'time-exceeded' ? 'ttl-exceeded' : 'unreachable';
+        else if (reply.kind === 'icmp' && reply.type === 'echo-reply') Object.assign(result, { status: 'success', success: true, ttl: reply.ttl });
+        else result.status = reply.kind === 'icmp' && reply.type === 'time-exceeded' ? 'ttl-exceeded' : 'unreachable';
         done();
       });
-      if (!this.originate(dst, { id, seq, ttl: this.initialTtl })) {
-        this.forget(id, seq);
+      if (!this.originate(dst, (src) => ({ kind: 'icmp', type: 'echo-request', src, dst, ttl: this.initialTtl, id, seq }))) {
+        this.forget(`icmp:${id}:${seq}`);
         result.status = 'no-route';
         done();
       }
@@ -228,12 +298,13 @@ export abstract class IpDevice extends Device {
           if (finished) Object.assign(result, { done: true, reached: answered.some((p) => p.from === dst) });
           else probe(ttl + 1, 0);
         });
-      this.expect(id, seq, timeoutMs, (reply) => {
-        hop.probes.push(reply ? { from: reply.src, rttMs: this.now - sentAt, unreachable: reply.type === 'unreachable' } : {});
+      this.expect(`icmp:${id}:${seq}`, timeoutMs, (reply) => {
+        const unreachable = reply?.kind === 'icmp' && reply.type === 'unreachable';
+        hop.probes.push(reply ? { from: reply.src, rttMs: this.now - sentAt, unreachable } : {});
         next();
       });
-      if (!this.originate(dst, { id, seq, ttl })) {
-        this.forget(id, seq);
+      if (!this.originate(dst, (src) => ({ kind: 'icmp', type: 'echo-request', src, dst, ttl, id, seq }))) {
+        this.forget(`icmp:${id}:${seq}`);
         hop.probes.push({});
         Object.assign(result, { done: true });
       }
@@ -242,55 +313,52 @@ export abstract class IpDevice extends Device {
     return result;
   }
 
-  private expect(id: number, seq: number, timeoutMs: number, resolve: (reply: IcmpPacket | undefined) => void): void {
-    const key = `${id}:${seq}`;
+  /** Opens a TCP connection (SYN, then SYN-ACK or RST). The result fills in as the topology runs. */
+  connect(dst: Ipv4Address, port: number, timeoutMs = TCP_TIMEOUT_MS): ConnectResult {
+    ipToInt(dst);
+    const result: ConnectResult = { destination: dst, port, status: 'pending' };
+    const srcPort = this.nextPort++;
+    this.schedule(0, `connect ${dst}:${port}`, () => {
+      this.expect(`tcp:${srcPort}`, timeoutMs, (reply) => {
+        if (!reply) result.status = 'timeout';
+        else if (reply.kind === 'tcp') result.status = reply.flags === 'syn-ack' ? 'open' : 'refused';
+        else Object.assign(result, { status: 'unreachable', from: reply.src });
+      });
+      const syn = (src: Ipv4Address): IpPacket => ({ kind: 'tcp', src, dst, ttl: this.initialTtl, srcPort, dstPort: port, flags: 'syn' });
+      if (!this.originate(dst, syn)) {
+        this.forget(`tcp:${srcPort}`);
+        result.status = 'no-route';
+        return;
+      }
+      // TCP retransmits an unanswered SYN, which covers the packets routers drop while they ARP.
+      const retransmit = (at: number): void => {
+        if (at >= timeoutMs) return;
+        this.schedule(TCP_RETRANSMIT_MS, `connect ${dst}:${port} retransmit`, () => {
+          if (result.status !== 'pending') return;
+          this.originate(dst, syn);
+          retransmit(at + TCP_RETRANSMIT_MS);
+        });
+      };
+      retransmit(TCP_RETRANSMIT_MS);
+    });
+    return result;
+  }
+
+  private expect(key: string, timeoutMs: number, resolve: (reply: IpPacket | undefined) => void): void {
     const waiter: Waiter = { resolve };
-    waiter.timer = this.schedule(timeoutMs, `icmp timeout ${key}`, () => {
+    waiter.timer = this.schedule(timeoutMs, `timeout ${key}`, () => {
       this.waiters.delete(key);
       resolve(undefined);
     });
     this.waiters.set(key, waiter);
   }
 
-  private forget(id: number, seq: number): void {
-    const key = `${id}:${seq}`;
+  private forget(key: string): void {
     this.cancel(this.waiters.get(key)?.timer);
     this.waiters.delete(key);
   }
 
-  /** Sends a locally generated echo request. Returns false when there is no route at all. */
-  private originate(dst: Ipv4Address, { id, seq, ttl }: { id: number; seq: number; ttl: number }): boolean {
-    if (this.ownsIp(dst)) {
-      // Pinging yourself never touches the wire.
-      this.schedule(0, `local echo ${dst}`, () => this.deliverLocal({ kind: 'icmp', type: 'echo-reply', src: dst, dst, ttl: this.initialTtl, id, seq }));
-      return true;
-    }
-    const path = this.lookup(dst);
-    if (!path?.iface.ip) return false;
-    this.output({ kind: 'icmp', type: 'echo-request', src: path.iface.ip.address, dst, ttl, id, seq }, path);
-    return true;
-  }
-
-  // ---------------------------------------------------------------- receive path
-
-  /** Entry point for frames that reached this device's Layer 3 on `iface`. */
-  protected receiveL3(iface: Interface, frame: Frame): void {
-    if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC) return;
-    const p = frame.payload;
-    if (p.kind === 'arp') return this.handleArp(iface, p);
-    if (!iface.ip) return;
-    if (this.ownsIp(p.dst)) return this.deliverLocal(p);
-    if (frame.dst === BROADCAST_MAC || !this.forwarding) return;
-    this.forward(p, iface);
-  }
-
-  private deliverLocal(p: IcmpPacket): void {
-    if (p.type === 'echo-request') {
-      const path = this.lookup(p.src);
-      if (path) this.output({ ...p, type: 'echo-reply', src: p.dst, dst: p.src, ttl: this.initialTtl }, path);
-      return;
-    }
-    const key = `${p.id}:${p.seq}`;
+  private resolveWaiter(key: string, p: IpPacket): void {
     const waiter = this.waiters.get(key);
     if (!waiter) return;
     this.waiters.delete(key);
@@ -298,21 +366,89 @@ export abstract class IpDevice extends Device {
     waiter.resolve(p);
   }
 
+  /** Sends a locally generated packet, sourced from the exit interface. Returns false when there is no route at all. */
+  protected originate(dst: Ipv4Address, build: (src: Ipv4Address) => IpPacket): boolean {
+    if (this.ownsIp(dst)) {
+      // Talking to yourself never touches the wire.
+      const p = build(dst);
+      this.schedule(0, `local ${dst}`, () => this.deliverLocal(p));
+      return true;
+    }
+    const path = this.lookup(dst);
+    if (!path?.iface.ip) return false;
+    this.output(build(path.iface.ip.address), path);
+    return true;
+  }
+
+  /** Routes a packet we built ourselves (replies, relayed DHCP). Locally generated traffic skips outbound ACLs. */
+  protected sendIp(p: IpPacket): void {
+    if (this.ownsIp(p.dst)) {
+      this.schedule(0, `local ${p.dst}`, () => this.deliverLocal(p));
+      return;
+    }
+    const path = this.lookup(p.dst);
+    if (path) this.output(p, path);
+  }
+
+  // ---------------------------------------------------------------- receive path
+
+  /** Entry point for frames that reached this device's Layer 3 on `iface`. */
+  protected receiveL3(iface: Interface, frame: Frame): void {
+    const multicast = this.acceptsMulticast(frame.dst, iface);
+    if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !multicast) return;
+    const p = frame.payload;
+    if (p.kind === 'arp') return this.handleArp(iface, p);
+    const dhcp = p.kind === 'udp' && p.dhcp !== undefined;
+    // A DHCP client has no address yet, so DHCP is the one thing an unaddressed interface takes.
+    if (!iface.ip) {
+      if (dhcp) this.handleDhcp(iface, p);
+      return;
+    }
+    if (!this.permits(iface, 'in', p)) return this.icmpError('unreachable', p, iface);
+    if (dhcp && this.handleDhcp(iface, p)) return;
+    if (p.kind === 'ospf') return this.handleOspf(iface, p, frame);
+    if (multicast) return;
+    const q = this.natInbound(iface, p);
+    if (this.ownsIp(q.dst) || q.dst === LIMITED_BROADCAST) return this.deliverLocal(q);
+    if (frame.dst === BROADCAST_MAC || !this.forwarding) return;
+    this.forward(q, iface);
+  }
+
+  private deliverLocal(p: IpPacket): void {
+    if (p.kind === 'icmp') {
+      if (p.type === 'echo-request') return this.sendIp({ ...p, type: 'echo-reply', src: p.dst, dst: p.src, ttl: this.initialTtl });
+      if (p.type === 'echo-reply') return this.resolveWaiter(`icmp:${p.id}:${p.seq}`, p);
+      // An error: match it to whatever we sent, using the quoted original.
+      const o = p.original;
+      return this.resolveWaiter(o?.kind === 'tcp' ? `tcp:${o.srcPort}` : `icmp:${p.id}:${p.seq}`, p);
+    }
+    if (p.kind === 'tcp') {
+      if (p.flags !== 'syn') return this.resolveWaiter(`tcp:${p.dstPort}`, p);
+      const flags = this.listeningPorts.includes(p.dstPort) ? 'syn-ack' : 'rst';
+      return this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: this.initialTtl, srcPort: p.dstPort, dstPort: p.srcPort, flags });
+    }
+  }
+
   private forward(p: IpPacket, ingress: Interface): void {
     const ttl = p.ttl - 1;
     if (ttl <= 0) return this.icmpError('time-exceeded', p, ingress);
     const path = this.lookup(p.dst);
     if (!path) return this.icmpError('unreachable', p, ingress);
-    this.output({ ...p, ttl }, path);
+    const out = this.natOutbound(ingress, path.iface, { ...p, ttl });
+    if (!out) return;
+    if (!this.permits(path.iface, 'out', out)) return this.icmpError('unreachable', p, ingress);
+    this.output(out, path);
   }
 
   /** Errors are sourced from the interface the offending packet arrived on. Never error about an error. */
   private icmpError(type: 'time-exceeded' | 'unreachable', p: IpPacket, ingress: Interface): void {
-    if (p.type !== 'echo-request' && p.type !== 'echo-reply') return;
+    if (p.kind === 'ospf' || p.kind === 'udp') return;
+    if (p.kind === 'icmp' && p.type !== 'echo-request' && p.type !== 'echo-reply') return;
     const path = this.lookup(p.src);
     const src = ingress.ip?.address;
     if (!path || !src) return;
-    this.output({ kind: 'icmp', type, src, dst: p.src, ttl: this.initialTtl, id: p.id, seq: p.seq }, path);
+    const [id, seq] = p.kind === 'icmp' ? [p.id, p.seq] : [0, 0];
+    this.output({ kind: 'icmp', type, src, dst: p.src, ttl: this.initialTtl, id, seq, original: p }, path);
   }
 
   // ---------------------------------------------------------------- ARP and transmit
@@ -351,7 +487,7 @@ export abstract class IpDevice extends Device {
       this.flushPending(p.senderIp);
     }
     if (p.op !== 'request') return;
-    if (forMe || this.shouldProxy(iface, p.targetIp)) {
+    if (forMe || this.answersArpFor(iface, p.targetIp) || this.shouldProxy(iface, p.targetIp)) {
       this.transmitL3(iface, p.senderMac, {
         kind: 'arp',
         op: 'reply',
@@ -423,11 +559,14 @@ export abstract class IpDevice extends Device {
       }
     }
     iface.ip = { address, prefix };
+    iface.dhcpClient = undefined;
   }
 }
 
-function broadcastOf(ip: Ipv4Address, prefix: number): Ipv4Address {
+export function broadcastOf(ip: Ipv4Address, prefix: number): Ipv4Address {
   const mask = ipToInt(prefixToMask(prefix));
   const n = (ipToInt(ip) & mask) | (~mask >>> 0);
   return [24, 16, 8, 0].map((s) => (n >>> s) & 0xff).join('.');
 }
+
+

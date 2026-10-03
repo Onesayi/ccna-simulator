@@ -1,9 +1,15 @@
 import { isValidIp, parsePrefix, networkAddress } from '../core/addressing';
 import type { Interface } from '../devices/device';
 import type { Device } from '../devices/device';
-import { IpDevice } from '../devices/ip-device';
+import type { IpDevice } from '../devices/ip-device';
 import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
+import type { OspfProcess } from '../routing/ospf';
+import type { Acl } from '../services/acl';
+import type { DhcpPool } from '../services/dhcp';
+import { CONFIG_MODES, EXEC, IF_MODES, iface, ip, requireIp, requireSwitch, vlanId, type Command, type Mode, type Session } from './common';
+import { OSPF_COMMANDS } from './commands-ospf';
+import { SERVICE_COMMANDS } from './commands-services';
 import {
   formatIosPing,
   formatIosTraceroute,
@@ -12,14 +18,13 @@ import {
   showArp,
   showInterfacesSwitchport,
   showIpIntBrief,
+  showIpInterface,
   showIpRoute,
+  showLogging,
   showMacTable,
   showTrunks,
   showVlanBrief,
 } from './show';
-
-/** IOS command modes. */
-export type Mode = 'user' | 'privileged' | 'config' | 'config-if' | 'config-subif' | 'config-vlan';
 
 const PROMPT_SUFFIX: Record<Mode, string> = {
   user: '>',
@@ -28,6 +33,10 @@ const PROMPT_SUFFIX: Record<Mode, string> = {
   'config-if': '(config-if)#',
   'config-subif': '(config-subif)#',
   'config-vlan': '(config-vlan)#',
+  'config-router': '(config-router)#',
+  'dhcp-config': '(dhcp-config)#',
+  'config-std-nacl': '(config-std-nacl)#',
+  'config-ext-nacl': '(config-ext-nacl)#',
 };
 
 /** Anything a terminal can drive: the IOS CLI here, or the PC command prompt. */
@@ -36,25 +45,17 @@ export interface Shell {
   execute(line: string): string;
 }
 
-interface Command {
-  /**
-   * Keywords, each matched by unambiguous prefix like IOS ("sh run", "conf t"). `<x>` is a free
-   * argument; a final `<x...>` swallows the rest of the line.
-   */
-  syntax: string;
-  modes: Mode[];
-  help: string;
-  run: (s: CliSession, args: string[]) => string | void;
-}
-
 /**
  * One terminal attached to one router or switch. Parses IOS-style input with abbreviation
  * support and returns the text a real device would print.
  */
-export class CliSession implements Shell {
+export class CliSession implements Shell, Session {
   mode: Mode = 'user';
   currentInterface?: Interface;
   currentVlan?: number;
+  currentOspf?: OspfProcess;
+  currentPool?: DhcpPool;
+  currentAcl?: Acl;
 
   constructor(readonly device: Device) {}
 
@@ -80,19 +81,32 @@ export class CliSession implements Shell {
     }
 
     const negated = words[0]?.toLowerCase() === 'no';
-    const match = this.match(negated ? words.slice(1) : words, negated);
+    let match = this.match(negated ? words.slice(1) : words, negated);
+    if (!match && this.mode !== 'config' && CONFIG_MODES.includes(this.mode)) {
+      // Like IOS, a global configuration command typed in a sub-mode drops back to global config.
+      const saved = this.mode;
+      this.mode = 'config';
+      match = this.match(negated ? words.slice(1) : words, negated);
+      if (!match) this.mode = saved;
+    }
     if (match === 'ambiguous') return `% Ambiguous command:  "${input}"`;
     if (!match) return `% Invalid input detected at '^' marker.`;
+    const logged = this.device.log.length;
+    let out: string;
     try {
-      return match.cmd.run(this, match.args) ?? '';
+      out = match.cmd.run(this, match.args) ?? '';
     } catch (err) {
-      return `% ${(err as Error).message}`;
+      out = `% ${(err as Error).message}`;
     }
+    // Let routing protocols react, then show the console messages this device logged meanwhile.
+    this.device.network?.converge();
+    const messages = this.device.log.slice(logged);
+    return [out, ...messages].filter(Boolean).join('\n');
   }
 
   private match(words: string[], negated: boolean): { cmd: Command; args: string[] } | 'ambiguous' | undefined {
     const candidates = COMMANDS.filter((c) => c.modes.includes(this.mode) && c.syntax.startsWith('no ') === negated);
-    const hits: { cmd: Command; args: string[] }[] = [];
+    let hits: { cmd: Command; args: string[] }[] = [];
     for (const cmd of candidates) {
       const tokens = cmd.syntax.replace(/^no /, '').split(' ');
       const greedy = tokens[tokens.length - 1]!.endsWith('...>');
@@ -106,6 +120,9 @@ export class CliSession implements Shell {
       });
       if (ok) hits.push({ cmd, args });
     }
+    // A command that starts with a free argument (ACL lines: "10 permit ...") only matches as a last resort.
+    const keyworded = hits.filter((h) => !h.cmd.syntax.replace(/^no /, '').startsWith('<'));
+    if (hits.length > 1 && keyworded.length) hits = keyworded;
     if (hits.length > 1) {
       // Prefer exact keyword matches before calling it ambiguous ("show vlan" vs "show version").
       const exact = hits.filter((h) => h.cmd.syntax.replace(/^no /, '').split(' ').every((t, i) => t.startsWith('<') || t === words[i]?.toLowerCase()));
@@ -125,42 +142,13 @@ export class CliSession implements Shell {
   private supports(c: Command): boolean {
     const isSwitch = this.device instanceof Switch;
     if (/switchport|vlan|mac address|trunk|default-gateway|ip routing/.test(c.syntax)) return isSwitch;
-    if (/encapsulation/.test(c.syntax)) return !isSwitch;
+    if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|telnet/.test(c.syntax)) return !isSwitch;
     return true;
   }
 }
 
-function requireSwitch(s: CliSession): Switch {
-  if (!(s.device instanceof Switch)) throw new Error('Invalid input detected');
-  return s.device;
-}
-
-function requireIp(s: CliSession): IpDevice {
-  if (!(s.device instanceof IpDevice)) throw new Error('Command not supported on this device');
-  return s.device;
-}
-
-function vlanId(arg: string | undefined): number {
-  const n = Number(arg);
-  if (!Number.isInteger(n) || n < 1 || n > 4094) throw new Error('Bad VLAN list');
-  return n;
-}
-
-function ip(arg: string | undefined): string {
-  if (!arg || !isValidIp(arg)) throw new Error(`Invalid input detected at '^' marker.`);
-  return arg;
-}
-
-const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-subif', 'config-vlan'];
-const IF_MODES: Mode[] = ['config-if', 'config-subif'];
-const EXEC: Mode[] = ['user', 'privileged'];
-
-function iface(s: CliSession): Interface {
-  return s.currentInterface!;
-}
-
 /** IOS prints link state changes as console syslog messages after `[no] shutdown`. */
-function linkMessages(i: Interface, wasUp: boolean, wasAdmin: boolean): string {
+function linkMessages(i: Interface, wasUp: boolean, wasAdmin: boolean): void {
   const out: string[] = [];
   if (!i.adminUp && wasAdmin) {
     out.push(`%LINK-5-CHANGED: Interface ${i.name}, changed state to administratively down`);
@@ -171,15 +159,14 @@ function linkMessages(i: Interface, wasUp: boolean, wasAdmin: boolean): string {
     if (i.isUp) out.push(`%LINEPROTO-5-UPDOWN: Line protocol on Interface ${i.name}, changed state to up`);
   }
   for (const line of out) i.device.log.push(line);
-  return out.join('\n');
 }
 
-function setAdmin(s: CliSession, up: boolean): string {
+function setAdmin(s: Session, up: boolean): void {
   const i = iface(s);
   const wasUp = i.isUp;
   const wasAdmin = i.adminUp;
   i.adminUp = up;
-  return linkMessages(i, wasUp, wasAdmin);
+  linkMessages(i, wasUp, wasAdmin);
 }
 
 /** Parses the tail of `ip route <net> <mask> ...`: next hop, exit interface, or both, then an optional AD. */
@@ -210,7 +197,7 @@ const COMMANDS: Command[] = [
     return 'Enter configuration commands, one per line.  End with CNTL/Z.';
   } },
   { syntax: 'exit', modes: [...EXEC, ...CONFIG_MODES], help: 'Exit from the current mode', run: (s) => {
-    if (s.mode === 'config-if' || s.mode === 'config-subif' || s.mode === 'config-vlan') s.mode = 'config';
+    if (s.mode !== 'config' && CONFIG_MODES.includes(s.mode)) s.mode = 'config';
     else if (s.mode === 'config') s.mode = 'privileged';
     else s.mode = 'user';
   } },
@@ -295,7 +282,11 @@ const COMMANDS: Command[] = [
     }
     d.setIp(i, ip(addr), parsePrefix(mask!));
   } },
-  { syntax: 'no ip address', modes: IF_MODES, help: 'Remove the IPv4 address', run: (s) => void (iface(s).ip = undefined) },
+  { syntax: 'no ip address', modes: IF_MODES, help: 'Remove the IPv4 address', run: (s) => {
+    const i = iface(s);
+    if (i.dhcpClient && s.device instanceof Router) s.device.disableDhcpClient(i);
+    i.ip = undefined;
+  } },
   { syntax: 'encapsulation dot1q <vlan>', modes: ['config-subif'], help: 'IEEE 802.1Q VLAN tag for this sub-interface', run: (s, [v]) => {
     Object.assign(iface(s), { encapVlan: vlanId(v), encapNative: false });
   } },
@@ -342,7 +333,16 @@ const COMMANDS: Command[] = [
 
   // Show commands
   { syntax: 'show running-config', modes: ['privileged'], help: 'Current operating configuration', run: (s) => runningConfig(requireIp(s)) },
-  { syntax: 'show ip interface brief', modes: EXEC, help: 'Interface status summary', run: (s) => showIpIntBrief(s.device) },
+  { syntax: 'show ip interface <name...>', modes: EXEC, help: 'brief | <interface>: IP settings, ACLs and NAT', run: (s, [name]) => {
+    if (name && 'brief'.startsWith(name.toLowerCase())) return showIpIntBrief(s.device);
+    return showIpInterface(s.device.iface(name!));
+  } },
+  { syntax: 'show ip route <filter>', modes: EXEC, help: 'connected | static | ospf', run: (s, [f]) => {
+    const codes: Record<string, string[]> = { connected: ['C', 'L'], static: ['S'], ospf: ['O'] };
+    const key = Object.keys(codes).find((k) => k.startsWith(f!.toLowerCase()));
+    if (!key) throw new Error(`Invalid input detected at '^' marker.`);
+    return showIpRoute(requireIp(s), codes[key]);
+  } },
   { syntax: 'show ip route', modes: EXEC, help: 'IP routing table', run: (s) => showIpRoute(requireIp(s)) },
   { syntax: 'show ip arp', modes: EXEC, help: 'ARP table', run: (s) => showArp(requireIp(s)) },
   { syntax: 'show arp', modes: EXEC, help: 'ARP table', run: (s) => showArp(requireIp(s)) },
@@ -353,7 +353,9 @@ const COMMANDS: Command[] = [
     const sw = requireSwitch(s);
     return showInterfacesSwitchport(sw, sw.iface(name!));
   } },
-  { syntax: 'show logging', modes: EXEC, help: 'Console log messages', run: (s) => s.device.log.join('\n') },
+  { syntax: 'show logging', modes: EXEC, help: 'Console log messages', run: (s) => showLogging(s.device) },
+  ...OSPF_COMMANDS,
+  ...SERVICE_COMMANDS,
 ];
 
 export function parseVlanList(list: string): Set<number> {

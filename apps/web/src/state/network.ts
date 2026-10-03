@@ -150,6 +150,7 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     const device = topology.devices.get(id);
     if (!device) return;
     topology.remove(device);
+    topology.converge();
     positions.delete(id);
     shells.delete(id);
     set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, selectedId: selectedId === id ? undefined : selectedId }));
@@ -163,12 +164,14 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     const [pb] = b.freePorts();
     if (!pa || !pb) return set({ error: `${!pa ? a.hostname : b.hostname} has no free ports` });
     topology.connect(pa, pb);
+    topology.converge();
     set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, error: undefined }));
   },
   disconnect: (linkId) => {
     const { topology } = get();
     const link = topology.links.find((l) => l.id === linkId);
     if (link) topology.disconnect(link);
+    topology.converge();
     set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1 }));
   },
   move: (id, at) => {
