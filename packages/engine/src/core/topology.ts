@@ -5,6 +5,8 @@ import type { Device, Interface } from '../devices/device';
 /** Propagation delay per hop. Purely cosmetic: it spaces events out for the packet view. */
 export const LINK_DELAY_MS = 1;
 
+let linkCounter = 0;
+
 export interface Link {
   id: string;
   a: Interface;
@@ -21,31 +23,53 @@ export interface TraceEntry {
 /** Owns devices, cables and the clock. The UI and the lab grader talk to the network through this. */
 export class Topology {
   readonly scheduler = new Scheduler();
+  /** Keyed by `Device.id`, so renaming a device with `hostname` does not orphan it. */
   readonly devices = new Map<string, Device>();
   readonly links: Link[] = [];
   /** Every frame that crossed a cable, in order. Feeds the packet capture panel. */
   readonly trace: TraceEntry[] = [];
 
   add<T extends Device>(device: T): T {
-    if (this.devices.has(device.hostname)) throw new Error(`Duplicate hostname ${device.hostname}`);
-    this.devices.set(device.hostname, device);
+    if (this.find(device.hostname)) throw new Error(`Duplicate hostname ${device.hostname}`);
+    this.devices.set(device.id, device);
     device.attach(this);
     return device;
   }
 
-  get(hostname: string): Device {
-    const d = this.devices.get(hostname);
-    if (!d) throw new Error(`No device named ${hostname}`);
+  find(hostname: string): Device | undefined {
+    const wanted = hostname.toLowerCase();
+    return [...this.devices.values()].find((d) => d.hostname.toLowerCase() === wanted);
+  }
+
+  /** Looks a device up by hostname (case-insensitive) or by id. */
+  get(hostnameOrId: string): Device {
+    const d = this.devices.get(hostnameOrId) ?? this.find(hostnameOrId);
+    if (!d) throw new Error(`No device named ${hostnameOrId}`);
     return d;
+  }
+
+  remove(device: Device): void {
+    for (const link of this.links.filter((l) => l.a.device === device || l.b.device === device)) this.disconnect(link);
+    this.devices.delete(device.id);
   }
 
   connect(a: Interface, b: Interface): Link {
     if (a.link || b.link) throw new Error('Interface already cabled');
-    const link: Link = { id: `${a.fullName}<->${b.fullName}`, a, b };
+    if (a.kind !== 'physical' || b.kind !== 'physical') throw new Error('Only physical ports take a cable');
+    if (a.device === b.device) throw new Error('Cannot cable a device to itself');
+    const link: Link = { id: `link${++linkCounter}`, a, b };
     a.link = link;
     b.link = link;
     this.links.push(link);
     return link;
+  }
+
+  disconnect(link: Link): void {
+    const i = this.links.indexOf(link);
+    if (i < 0) return;
+    this.links.splice(i, 1);
+    link.a.link = undefined;
+    link.b.link = undefined;
   }
 
   /** Called by a device to put a frame on the wire. Delivery happens on a later tick. */

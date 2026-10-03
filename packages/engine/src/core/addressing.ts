@@ -49,3 +49,31 @@ export function networkAddress(ip: Ipv4Address, prefix: number): Ipv4Address {
 export function sameSubnet(a: Ipv4Address, b: Ipv4Address, prefix: number): boolean {
   return networkAddress(a, prefix) === networkAddress(b, prefix);
 }
+
+/** Accepts a dotted mask ("255.255.255.0") or a prefix length ("24" or "/24"). */
+export function parsePrefix(maskOrPrefix: string): number {
+  const p = maskOrPrefix.replace(/^\//, '');
+  if (/^\d{1,2}$/.test(p)) {
+    const n = Number(p);
+    if (n > 32) throw new Error(`Invalid prefix length: ${maskOrPrefix}`);
+    return n;
+  }
+  return maskToPrefix(p);
+}
+
+export function isValidIp(ip: string): boolean {
+  try {
+    ipToInt(ip);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The classful network length (A=8, B=16, C=24) used by `show ip route` to group subnets. */
+export function classfulPrefix(ip: Ipv4Address): number {
+  const first = ipToInt(ip) >>> 24;
+  if (first < 128) return 8;
+  if (first < 192) return 16;
+  return 24;
+}
