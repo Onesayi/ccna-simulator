@@ -5,6 +5,7 @@ import { Router } from '../devices/router';
 import { ospfConfig } from '../routing/ospf';
 import { formatAclEntry } from '../services/acl';
 import { Switch } from '../devices/switch';
+import { IosDevice } from '../devices/ios-device';
 import { ipv6InterfaceConfig, ipv6RouteConfig } from './commands-ipv6';
 
 /** Formatters for IOS show commands and ping/traceroute output. Pure functions of engine state. */
@@ -172,7 +173,27 @@ export function showInterfacesSwitchport(sw: Switch, i: Interface): string {
 // ---------------------------------------------------------------- running-config
 
 export function runningConfig(d: Device & IpDevice): string {
-  const out: string[] = ['Building configuration...', '', 'Current configuration : {bytes} bytes', '!', 'version 15.2', '!', `hostname ${d.hostname}`, '!'];
+  const ios = d instanceof IosDevice ? d : undefined;
+  const out: string[] = ['Building configuration...', '', 'Current configuration : {bytes} bytes', '!', 'version 15.2'];
+  const ts = ios?.logTimestamps;
+  if (ts) out.push(`service timestamps log ${ts.kind}${ts.msec ? ' msec' : ''}${ts.localtime ? ' localtime' : ''}${ts.showTimezone ? ' show-timezone' : ''}`);
+  if (ios?.mgmt.passwordEncryption) out.push('service password-encryption');
+  out.push('!', `hostname ${d.hostname}`, '!');
+  if (ios) {
+    const access = ios.mgmt.globalConfig().filter((l) => l !== 'service password-encryption');
+    if (access.length) out.push(...access, '!');
+    const tz = ios.ntp.config().filter((l) => l.startsWith('clock'));
+    if (tz.length) out.push(...tz, '!');
+    const discovery = [...(ios.discovery.cdpEnabled ? [] : ['no cdp run']), ...(ios.discovery.lldpEnabled ? ['lldp run'] : [])];
+    if (discovery.length) out.push(...discovery, '!');
+  }
+  if (d instanceof Router && d.dhcpRelayTrustAll) out.push('ip dhcp relay information trust-all', '!');
+  if (d instanceof Switch && (d.snooping.vlans.size || d.snooping.enabled || !d.snooping.option82)) {
+    if (d.snooping.vlans.size) out.push(`ip dhcp snooping vlan ${formatVlanList(d.snooping.vlans)}`);
+    if (!d.snooping.option82) out.push('no ip dhcp snooping information option');
+    if (d.snooping.enabled) out.push('ip dhcp snooping');
+    out.push('!');
+  }
   if (d instanceof Router && d.ipv6Routing) out.push('ipv6 unicast-routing', '!');
   if (d instanceof Switch) {
     const stp = d.stp;
@@ -233,6 +254,8 @@ export function runningConfig(d: Device & IpDevice): string {
       if (st?.guardRoot) out.push(' spanning-tree guard root');
       if (st?.cost) out.push(` spanning-tree cost ${st.cost}`);
       if (st?.priority !== undefined) out.push(` spanning-tree port-priority ${st.priority}`);
+      if (i.dhcpSnooping?.rateLimit) out.push(` ip dhcp snooping limit rate ${i.dhcpSnooping.rateLimit}`);
+      if (i.dhcpSnooping?.trust) out.push(' ip dhcp snooping trust');
     } else {
       out.push(i.dhcpClient ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
       out.push(...ipv6InterfaceConfig(i));
@@ -249,6 +272,20 @@ export function runningConfig(d: Device & IpDevice): string {
     if (o?.priority !== undefined) out.push(` ip ospf priority ${o.priority}`);
     if (o?.helloInterval) out.push(` ip ospf hello-interval ${o.helloInterval}`);
     if (o?.deadInterval) out.push(` ip ospf dead-interval ${o.deadInterval}`);
+    if (i.dhcpRelayTrusted) out.push(' ip dhcp relay information trusted');
+    if (i.hsrp) {
+      if (i.hsrp.version === 2) out.push(' standby version 2');
+      for (const g of i.hsrp.groups) {
+        const n = g.group === 0 ? '' : ` ${g.group}`;
+        out.push(` standby${n} ip${g.vip ? ` ${g.vip}` : ''}`);
+        if (g.priority !== 100) out.push(` standby${n} priority ${g.priority}`);
+        if (g.preempt) out.push(` standby${n} preempt`);
+        for (const t of g.tracks) out.push(` standby${n} track ${t.iface}${t.decrement !== 10 ? ` ${t.decrement}` : ''}`);
+      }
+    }
+    if (i.cdp === false) out.push(' no cdp enable');
+    if (i.lldp?.transmit === false) out.push(' no lldp transmit');
+    if (i.lldp?.receive === false) out.push(' no lldp receive');
     if (!i.adminUp) out.push(' shutdown');
     if (d instanceof Router && i.kind === 'physical') out.push(' duplex auto', ' speed auto');
     out.push('!');
@@ -277,7 +314,10 @@ export function runningConfig(d: Device & IpDevice): string {
       }
     }
   }
-  out.push('!', 'line con 0', '!', 'line vty 0 4', ' login', '!', 'end');
+  out.push('!', ...(ios ? ios.mgmt.lineConfig() : ['line con 0', '!', 'line vty 0 4', ' login']), '!');
+  const ntp = ios?.ntp.config().filter((l) => l.startsWith('ntp')) ?? [];
+  if (ntp.length) out.push(...ntp, '!');
+  out.push('end');
   const text = out.join('\n');
   return text.replace('{bytes}', String(text.length));
 }

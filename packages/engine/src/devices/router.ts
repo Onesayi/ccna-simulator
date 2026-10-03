@@ -1,19 +1,35 @@
 import { BROADCAST_MAC, prefixToMask, sameSubnet, type Ipv4Address, type MacAddress } from '../core/addressing';
-import { OSPF_ALL_ROUTERS, OSPF_ALL_ROUTERS_MAC, type DhcpMessage, type Frame, type IpPacket, type OspfMessage, type UdpPacket } from '../core/frames';
+import {
+  HSRP_V1_GROUP,
+  HSRP_V1_MAC,
+  HSRP_V2_GROUP,
+  HSRP_V2_MAC,
+  OSPF_ALL_ROUTERS,
+  OSPF_ALL_ROUTERS_MAC,
+  type DhcpMessage,
+  type Frame,
+  type IpPacket,
+  type OspfMessage,
+  type UdpPacket,
+} from '../core/frames';
+import { Hsrp } from '../routing/hsrp';
 import { OspfProcess } from '../routing/ospf';
 import { evaluateAcl, type Acl } from '../services/acl';
 import { DhcpClient, DhcpServer } from '../services/dhcp';
 import { Nat } from '../services/nat';
 import { displayIfName, normaliseIfName, type Interface } from './device';
-import { IpDevice, LIMITED_BROADCAST, type Route, type StaticRoute } from './ip-device';
+import { IosDevice } from './ios-device';
+import { LIMITED_BROADCAST, type Route, type StaticRoute } from './ip-device';
 
 /**
  * An IOS-style router. Physical GigabitEthernet ports start shut down, like a fresh ISR.
  * Supports 802.1Q sub-interfaces for router-on-a-stick and loopbacks, single-area OSPFv2,
- * IPv4 ACLs, NAT/PAT, and DHCP as a server, relay and client.
+ * IPv4 ACLs, NAT/PAT, DHCP as a server, relay and client, and HSRP.
  */
-export class Router extends IpDevice {
+export class Router extends IosDevice {
   readonly kind = 'router' as const;
+  readonly platform = 'cisco ISR4331';
+  readonly software = 'Cisco IOS Software, ISR Software (X86_64_LINUX_IOSD-UNIVERSALK9-M), Version 15.2(4)M, RELEASE SOFTWARE (fc1)';
   readonly ospf = new Map<number, OspfProcess>();
   readonly acls = new Map<string, Acl>();
   readonly dhcpServer = new DhcpServer();
@@ -25,8 +41,20 @@ export class Router extends IpDevice {
     },
     interfaceAddress: (name) => this.findIface(name)?.ip?.address,
   });
-  /** Telnet and SSH answer on the VTY lines. */
-  protected override readonly listeningPorts = [22, 23];
+  readonly hsrp = new Hsrp({
+    interfaces: this.interfaces,
+    log: this.log,
+    now: () => this.now,
+    findIface: (name) => this.findIface(name),
+    send: (iface, msg, srcMac) => {
+      if (!iface.ip) return;
+      const v2 = msg.version === 2;
+      const packet: IpPacket = { kind: 'udp', src: iface.ip.address, dst: v2 ? HSRP_V2_GROUP : HSRP_V1_GROUP, ttl: 1, srcPort: 1985, dstPort: 1985, hsrp: msg };
+      this.transmitL3(iface, v2 ? HSRP_V2_MAC : HSRP_V1_MAC, packet, srcMac);
+    },
+  });
+  /** `ip dhcp relay information trust-all`. */
+  dhcpRelayTrustAll = false;
   /** `ipv6 unicast-routing`. */
   ipv6Routing = false;
   /** DHCP client interfaces that were down at the last round, so a lease is requested when they come up. */
@@ -63,6 +91,7 @@ export class Router extends IpDevice {
   }
 
   receive(on: Interface, frame: Frame): void {
+    if (this.receiveDiscovery(on, frame)) return;
     const subs = this.interfaces.filter((i) => i.parent === on && i.isUp);
     let target: Interface | undefined;
     if (frame.vlan !== undefined) target = subs.find((i) => i.encapVlan === frame.vlan && !i.encapNative);
@@ -76,6 +105,8 @@ export class Router extends IpDevice {
 
   override tick(): void {
     super.tick();
+    this.tickServices();
+    this.hsrp.tick();
     for (const p of this.ospf.values()) p.tick();
     for (const [iface, client] of this.dhcpClients) {
       if (!iface.isUp) this.dhcpWasDown.add(iface);
@@ -84,9 +115,38 @@ export class Router extends IpDevice {
   }
 
   override settle(): boolean {
-    let changed = false;
+    let changed = this.settleServices();
+    changed = this.hsrp.settle() || changed;
     for (const p of this.ospf.values()) changed = p.settle() || changed;
     return changed;
+  }
+
+  protected cdpCapabilities(): string[] {
+    return ['R', 'B', 'S', 'I'];
+  }
+
+  protected lldpCapabilities(): string[] {
+    return ['R'];
+  }
+
+  // ---------------------------------------------------------------- HSRP
+
+  protected override handleUdpControl(iface: Interface, p: UdpPacket): boolean {
+    if (!p.hsrp || p.dstPort !== 1985) return false;
+    this.hsrp.receive(iface, p.hsrp, p.src);
+    return true;
+  }
+
+  protected override acceptsMac(mac: MacAddress, iface: Interface): boolean {
+    return this.hsrp.ownsMac(iface, mac);
+  }
+
+  protected override virtualMacFor(iface: Interface, ip: Ipv4Address): MacAddress | undefined {
+    return this.hsrp.activeMacFor(iface, ip);
+  }
+
+  protected override ownsVirtualIp(ip: Ipv4Address): boolean {
+    return this.hsrp.ownsVip(ip);
   }
 
   ospfProcess(pid: number): OspfProcess {
@@ -114,6 +174,7 @@ export class Router extends IpDevice {
   }
 
   protected override acceptsMulticast(mac: MacAddress, iface: Interface): boolean {
+    if (mac === HSRP_V1_MAC || mac === HSRP_V2_MAC) return (iface.hsrp?.groups.length ?? 0) > 0 && (iface.hsrp!.version === 2) === (mac === HSRP_V2_MAC);
     if (mac !== OSPF_ALL_ROUTERS_MAC) return false;
     return [...this.ospf.values()].some((p) => {
       const oi = p.ifaces.get(iface);
@@ -216,6 +277,9 @@ export class Router extends IpDevice {
       return true;
     }
     if (p.dst !== LIMITED_BROADCAST && !toUs) return false;
+    // Option 82 with no relay address means a snooping switch added it. IOS drops such packets
+    // unless the interface (or the whole router) trusts relay information.
+    if (msg.option82 && !msg.giaddr && !iface.dhcpRelayTrusted && !this.dhcpRelayTrustAll) return true;
     // Client-to-server. Serve it if a pool covers the client's subnet, otherwise relay it.
     const via = msg.giaddr ?? iface.ip.address;
     if (this.dhcpServer.poolFor(via) || msg.op === 'release') {

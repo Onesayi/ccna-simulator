@@ -6,6 +6,9 @@ import { Switch } from '../devices/switch';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
 import type { DhcpPool } from '../services/dhcp';
+import type { LineConfig } from '../services/management';
+import { IosDevice } from '../devices/ios-device';
+import type { Interaction, Shell } from './remote';
 
 /** IOS command modes. */
 export type Mode =
@@ -19,7 +22,8 @@ export type Mode =
   | 'config-router'
   | 'dhcp-config'
   | 'config-std-nacl'
-  | 'config-ext-nacl';
+  | 'config-ext-nacl'
+  | 'config-line';
 
 /** The parts of a CLI session that commands read and change. */
 export interface Session {
@@ -32,6 +36,16 @@ export interface Session {
   currentOspf?: OspfProcess;
   currentPool?: DhcpPool;
   currentAcl?: Acl;
+  /** `line vty` or `line con`. */
+  currentLine?: LineConfig;
+  /** Questions the session is waiting on (`Password:`) and the telnet or SSH session it opened. */
+  readonly io: Interaction;
+  /** True for a telnet or SSH session, false on the console. */
+  readonly remote: boolean;
+  /** Set by `exit` in a remote session: the connection closes. */
+  closed: boolean;
+  /** Opens a session on another device, for telnet and SSH. */
+  spawn(device: IosDevice, privilege: number): Shell;
 }
 
 export interface Command {
@@ -45,7 +59,7 @@ export interface Command {
   run: (s: Session, args: string[]) => string | void;
 }
 
-export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl'];
+export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl', 'config-line'];
 export const IF_MODES: Mode[] = ['config-if', 'config-if-range', 'config-subif'];
 /** Switchport commands: one interface, or a range of them. */
 export const L2_IF_MODES: Mode[] = ['config-if', 'config-if-range'];
@@ -60,6 +74,11 @@ export function requireSwitch(s: Session): Switch {
 
 export function requireRouter(s: Session): Router {
   if (!(s.device instanceof Router)) throw new Error(INVALID);
+  return s.device;
+}
+
+export function requireIos(s: Session): IosDevice {
+  if (!(s.device instanceof IosDevice)) throw new Error(INVALID);
   return s.device;
 }
 

@@ -1,9 +1,10 @@
 import { BROADCAST_MAC, type MacAddress } from '../core/addressing';
-import { SLOW_PROTOCOLS_MAC, STP_MAC, type BpduPacket, type ChannelPdu, type Frame, type Packet } from '../core/frames';
+import { SLOW_PROTOCOLS_MAC, STP_MAC, type BpduPacket, type ChannelPdu, type Frame, type Packet, type UdpPacket } from '../core/frames';
 import { channelProtocol, copyL2, negotiates, sameL2, type ChannelView, type MemberFlag } from '../switching/etherchannel';
 import { SpanningTree } from '../switching/stp';
 import { normaliseIfName, shortName, type ErrDisableReason, type Interface } from './device';
-import { IpDevice } from './ip-device';
+import { IosDevice } from './ios-device';
+import type { Ipv4Address } from '../core/addressing';
 
 export interface MacTableEntry {
   vlan: number;
@@ -13,6 +14,23 @@ export interface MacTableEntry {
   learnedAt: number;
 }
 
+export interface DhcpSnoopingBinding {
+  mac: MacAddress;
+  ip: Ipv4Address;
+  vlan: number;
+  port: Interface;
+  leaseSeconds: number;
+}
+
+/** `ip dhcp snooping ...`: global state, the VLANs it runs on, and the binding table it builds. */
+export interface DhcpSnooping {
+  enabled: boolean;
+  vlans: Set<number>;
+  /** Insert option 82 into client requests (on by default). */
+  option82: boolean;
+  bindings: DhcpSnoopingBinding[];
+}
+
 /** MAC address table aging time, matching the Catalyst default of 300 seconds. */
 export const MAC_AGING_MS = 300_000;
 
@@ -20,10 +38,15 @@ export const MAC_AGING_MS = 300_000;
  * A Catalyst-style switch: VLAN-aware MAC learning, flooding and 802.1Q trunking, plus
  * SVIs (`interface vlan 10`) for management, and inter-VLAN routing once `ip routing` is on.
  * Runs per-VLAN spanning tree, bundles ports into EtherChannels (LACP, PAgP or static) and
- * enforces port security on access ports.
+ * enforces port security on access ports and DHCP snooping.
  */
-export class Switch extends IpDevice {
+export class Switch extends IosDevice {
   readonly kind = 'switch' as const;
+  readonly platform = 'cisco WS-C2960-24TT-L';
+  readonly software = 'Cisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)';
+  readonly snooping: DhcpSnooping = { enabled: false, vlans: new Set(), option82: true, bindings: [] };
+  /** Snooping drops already logged, so retransmits do not flood the console. */
+  private readonly snoopWarnings = new Set<string>();
   readonly vlans = new Map<number, string>([[1, 'default']]);
   readonly macTable: MacTableEntry[] = [];
   /** `ip routing`: turns the switch into a Layer 3 switch that routes between its SVIs. */
@@ -184,6 +207,7 @@ export class Switch extends IpDevice {
   // ---------------------------------------------------------------- frames in
 
   receive(on: Interface, frame: Frame): void {
+    if (this.receiveDiscovery(on, frame)) return;
     const p = frame.payload;
     if (p.kind === 'lacp' || p.kind === 'pagp') {
       if (on.channelGroup) this.channelHeard.set(on, p);
@@ -198,8 +222,52 @@ export class Switch extends IpDevice {
     if (vlan === undefined) return; // dropped: VLAN not allowed on this port
     if (!this.stp.forwarding(ingress, vlan)) return; // a discarding port neither learns nor forwards
 
+    let out: Frame | undefined = frame;
+    if (p.kind === 'udp' && p.dhcp && this.snoopingOn(vlan)) out = this.snoop(on, ingress, vlan, frame, p);
+    if (!out) return;
     this.learn(vlan, frame.src, ingress);
-    this.switchFrame(vlan, frame, ingress);
+    this.switchFrame(vlan, out, ingress);
+  }
+
+  // ---------------------------------------------------------------- DHCP snooping
+
+  snoopingOn(vlan: number): boolean {
+    return this.snooping.enabled && this.snooping.vlans.has(vlan);
+  }
+
+  /** Trusted ports pass everything; untrusted ports pass client messages only, and get option 82 added. */
+  private snoop(on: Interface, ingress: Interface, vlan: number, frame: Frame, p: UdpPacket): Frame | undefined {
+    const msg = p.dhcp!;
+    const trusted = Boolean(ingress.dhcpSnooping?.trust ?? on.dhcpSnooping?.trust);
+    const fromServer = msg.op === 'offer' || msg.op === 'ack' || msg.op === 'nak';
+    const drop = (why: string) => {
+      const key = `${on.name}|${why}|${frame.src}`;
+      if (!this.snoopWarnings.has(key)) {
+        this.snoopWarnings.add(key);
+        this.log.push(`%DHCP_SNOOPING-5-DHCP_SNOOPING_${why}: DHCP_SNOOPING drop message on untrusted port, message type: DHCP${msg.op.toUpperCase()}, MAC sa: ${frame.src}`);
+      }
+      return undefined;
+    };
+    const bindings = this.snooping.bindings;
+    const forget = (mac: MacAddress) => {
+      for (let k = bindings.length - 1; k >= 0; k--) if (bindings[k]!.mac === mac && bindings[k]!.vlan === vlan) bindings.splice(k, 1);
+    };
+    if (fromServer) {
+      if (!trusted) return drop('UNTRUSTED_PORT');
+      if (msg.op === 'nak') forget(msg.chaddr);
+      const client = this.macLookup(vlan, msg.chaddr)?.port;
+      if (msg.op === 'ack' && msg.yiaddr && client) {
+        forget(msg.chaddr);
+        bindings.push({ mac: msg.chaddr, ip: msg.yiaddr, vlan, port: client, leaseSeconds: (msg.leaseDays ?? 1) * 86_400 });
+      }
+      return frame;
+    }
+    if (trusted) return frame;
+    // An untrusted client must use its own MAC as the DHCP hardware address.
+    if (msg.chaddr !== frame.src) return drop('MATCH_MAC_FAIL');
+    if (msg.op === 'release') forget(msg.chaddr);
+    if (!this.snooping.option82 || msg.option82) return frame;
+    return { ...frame, payload: { ...p, dhcp: { ...msg, option82: { circuitId: `${vlan}-${shortName(on.name)}`, remoteId: this.bridgeMac } } } };
   }
 
   private receiveBpdu(on: Interface, bpdu: BpduPacket): void {
@@ -270,9 +338,9 @@ export class Switch extends IpDevice {
     }
   }
 
-  protected override transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet): void {
-    if (iface.kind !== 'svi') return super.transmitL3(iface, dstMac, payload);
-    this.switchFrame(iface.vlan!, { src: iface.mac, dst: dstMac, payload }, undefined);
+  protected override transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet, srcMac: MacAddress = iface.mac): void {
+    if (iface.kind !== 'svi') return super.transmitL3(iface, dstMac, payload, srcMac);
+    this.switchFrame(iface.vlan!, { src: srcMac, dst: dstMac, payload }, undefined);
   }
 
   /** MAC table lookup (`lookup` on the base class is the routing table lookup). */
@@ -321,7 +389,20 @@ export class Switch extends IpDevice {
 
   // ---------------------------------------------------------------- control plane rounds
 
+  protected cdpCapabilities(): string[] {
+    return this.ipRouting ? ['R', 'S', 'I'] : ['S', 'I'];
+  }
+
+  protected lldpCapabilities(): string[] {
+    return this.ipRouting ? ['B', 'R'] : ['B'];
+  }
+
+  protected override nativeVlanOf(port: Interface): number {
+    return port.mode === 'trunk' ? port.nativeVlan : port.accessVlan;
+  }
+
   override tick(): void {
+    this.tickServices();
     this.channelHeard.clear();
     for (const p of this.ports) {
       const cg = p.channelGroup;
@@ -334,7 +415,8 @@ export class Switch extends IpDevice {
   }
 
   override settle(): boolean {
-    let changed = this.settleChannels();
+    let changed = this.settleServices();
+    changed = this.settleChannels() || changed;
     changed = this.stp.settle() || changed;
     for (const p of this.ports) if (!p.isUp) this.clearDynamicSecure(p);
     return changed;

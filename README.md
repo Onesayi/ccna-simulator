@@ -22,11 +22,11 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 41 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
-- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
+- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, HSRP states and virtual IPs, DHCP snooping trust and bindings, SSH and VTY settings, NTP sync and time zones, CDP and LLDP neighbors, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
 - **Hints, quizzes and solutions.** Objectives carry optional hints, labs include multiple-choice questions on the theory behind them, and every lab has a model answer you can reveal.
 - **Progress tracking.** Completion, checks and hints used are saved in your browser, and the catalog shows progress per blueprint domain.
 - **Shareable links.** Each lab has its own URL, such as `#/labs/floating-static`.
@@ -34,7 +34,7 @@ The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-
 ![A router-on-a-stick lab in progress: the lab sheet grades objectives live while the learner types into R1's console](docs/img/lab.png)
 
 <details>
-<summary>All 33 labs</summary>
+<summary>All 41 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -51,6 +51,8 @@ The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-
 | Run single-area OSPF | 3.1, 3.3 |
 | Choose the DR and BDR | 3.3.a, 3.3.c |
 | Fix the OSPF adjacencies (troubleshooting) | 3.3.a, 3.3.b |
+| Give the LAN a gateway that survives a failure | 3.4 |
+| Fix the gateway that does not fail over (troubleshooting) | 3.4, 5.6 |
 | Hand out addresses with DHCP | 1.6, 1.7 |
 | Relay DHCP to a central server (troubleshooting) | 1.6, 1.7 |
 | Share one public address with PAT | 4.3 |
@@ -65,9 +67,15 @@ The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-
 | Stop a rogue switch with BPDU guard | 2.5.c, 2.5.d |
 | Bundle two links with LACP | 2.1.b, 2.1.c |
 | Fix a port-channel that will not form (troubleshooting) | 2.1.c, 2.4 |
+| Map the network with CDP and LLDP | 2.3 |
+| Listen to CDP: native VLAN mismatch (troubleshooting) | 2.3, 2.1.b |
 | Lock down access ports with port security | 4.7.e |
 | Recover a port shut by port security (troubleshooting) | 4.7.e, 2.4 |
+| Stop a rogue DHCP server with DHCP snooping | 4.7, 4.7.a |
+| Fix DHCP after snooping was turned on (troubleshooting) | 4.7.a, 1.7 |
+| Manage a switch over SSH only | 4.1 |
 | Read the logs (troubleshooting) | 5.6 |
+| Set the time with NTP | 5.6 |
 | Fix the office network (troubleshooting) | 1.6, 2.4, 3.2.b |
 | Capstone: build two sites from scratch | 2.1, 2.2, 3.2.b |
 | Capstone: branch to the internet | 1.7, 3.3, 4.3 |
@@ -86,8 +94,13 @@ The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-
 - **Spanning tree (PVST+ / Rapid PVST+)**: per-VLAN root election by bridge ID, root/designated/alternate/backup roles, path cost and port priority, `root primary/secondary`, PortFast, BPDU guard (err-disable) and root guard, with `show spanning-tree` output.
 - **EtherChannel**: LACP (active/passive), PAgP (desirable/auto) and static `on` bundles, member suspension on mismatched settings, load sharing, and `show etherchannel summary`.
 - **Port security**: maximum addresses, static, dynamic and sticky secure MACs, protect/restrict/shutdown violations, err-disabled ports and `show port-security`.
+- **HSRP**: versions 1 and 2, priority, preemption, interface tracking, the virtual MAC answering ARP, state changes in the log, and `show standby [brief]`.
+- **DHCP snooping**: trusted and untrusted ports, per-VLAN enablement, option 82 insertion, the binding table, and drops logged for rogue servers and spoofed client MACs.
+- **Device access**: `enable secret`, local users, `service password-encryption` (type 7), VTY and console lines with `login`/`login local` and `transport input`, RSA keys and SSH version 2, and working `telnet` and `ssh` sessions from PCs and IOS.
+- **NTP and the clock**: `clock set`, `clock timezone`, `ntp master` and `ntp server` with strata, `show clock`, `show ntp status|associations`, and `service timestamps log` on syslog messages.
+- **CDP and LLDP**: neighbor discovery on routers and switches with `show cdp|lldp neighbors [detail]`, per-port and global enable, and native VLAN mismatch warnings.
 - **IPv6**: global, EUI-64 and link-local addresses, Neighbor Discovery, router advertisements and SLAAC on PCs, `ipv6 unicast-routing`, static routes (including link-local next hops), ping and traceroute.
-- **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ipv6config` (static or SLAAC), `ping [-n count]`, `tracert`, `arp -a`, `telnet` and `curl`.
+- **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ipv6config` (static or SLAAC), `ping [-n count]`, `tracert`, `arp -a`, `telnet`, `ssh -l` and `curl`.
 - **IOS CLI**: mode hierarchy with abbreviations (`conf t`, `sh ip int br`), `?` help, `do` from config mode, `interface`, `interface range`, `ip address`, `encapsulation dot1q`, `ip route`, `ip routing`, VLAN and switchport commands, `ping`, `traceroute`, and `show running-config`, `ip route`, `ip arp`, `ip interface brief`, `vlan brief`, `mac address-table`, `interfaces trunk`, `interfaces <if> switchport`, plus `router ospf`, `ip dhcp pool`, `ip nat`, `access-list` and `ip access-list`, `spanning-tree`, `channel-group`, `switchport port-security` and the `ipv6` commands, with their `show` and `clear` commands. Output follows real IOS formatting, including the `.!!!!` first ping while ARP resolves.
 - A frame trace of every hop, ready for the packet capture panel.
 
@@ -129,7 +142,7 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | nearly 300 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| Engine | Vitest | over 350 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, DHCP snooping, SSH, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
 | App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, completing a lab end to end, hints, solutions and deep links. |
 
 ```bash

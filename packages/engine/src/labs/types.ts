@@ -101,13 +101,42 @@ export type Check =
   | { type: 'portSecurity'; device: string; interface: string; maximum?: number; violation?: 'shutdown' | 'restrict' | 'protect'; sticky?: boolean }
   /** At least `count` (default 1) secure addresses on the port, optionally of one type. */
   | { type: 'secureMac'; device: string; interface: string; kind?: 'sticky' | 'static'; count?: number }
+  /** An HSRP group on the interface, optionally in a state, with a virtual IP, priority, preempt or a tracked interface. */
+  | { type: 'hsrp'; device: string; interface: string; group: number; state?: 'Active' | 'Standby'; vip?: string; priority?: number; preempt?: boolean; track?: string }
+  /** DHCP snooping runs for the VLAN; optionally with option 82 insertion on or off. */
+  | { type: 'dhcpSnooping'; device: string; vlan: number; option82?: boolean }
+  | { type: 'dhcpSnoopingTrust'; device: string; interface: string; trusted: boolean }
+  /** The switch has a snooping binding for this client (a PC from the lab). */
+  | { type: 'dhcpSnoopingBinding'; device: string; client: string }
+  /** The SSH server runs, optionally at version 2 and with a key of at least `modulus` bits. */
+  | { type: 'sshServer'; device: string; version?: 2; modulus?: number }
+  /** The VTY lines accept exactly these transports, optionally with this login method. */
+  | { type: 'vtyAccess'; device: string; transport?: ('ssh' | 'telnet')[]; login?: 'local' | 'line' | 'none' }
+  | { type: 'localUser'; device: string; username: string; privilege?: number; secret?: boolean }
+  | { type: 'enableSecret'; device: string }
+  | { type: 'passwordEncryption'; device: string }
+  /** Logs in over telnet or SSH with these credentials: `success` when a session opens. */
+  | { type: 'remoteLogin'; from: string; to: string; protocol: 'ssh' | 'telnet'; username?: string; password: string; expect: 'success' | 'fail' }
+  /** The clock is synchronized by NTP, optionally to this server and at this stratum. */
+  | { type: 'ntpSynced'; device: string; server?: string; stratum?: number }
+  | { type: 'ntpMaster'; device: string; stratum?: number }
+  /** The device clock is in `minYear` or later (it was set or synchronized), optionally in a named time zone. */
+  | { type: 'clock'; device: string; minYear: number; timezone?: string }
+  /** Log messages carry timestamps (`service timestamps log datetime`). */
+  | { type: 'logTimestamps'; device: string }
+  /** A CDP (default) or LLDP neighbor, optionally seen on a given local interface. With `absent`, no such neighbor. */
+  | { type: 'neighbor'; device: string; neighbor: string; protocol?: 'cdp' | 'lldp'; interface?: string; absent?: boolean }
+  /** CDP or LLDP runs globally, or with `interface` on that port (LLDP: transmit). */
+  | { type: 'discovery'; device: string; protocol: 'cdp' | 'lldp'; enabled: boolean; interface?: string }
+  /** The interface description contains this text (case-insensitive). */
+  | { type: 'description'; device: string; interface: string; contains: string }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin'];
 
 export interface Objective {
   text: string;

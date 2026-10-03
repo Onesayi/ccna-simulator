@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { CliSession, type Device } from '@ccna-sim/engine';
+import type { Device } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
 /** An xterm.js console bound to one device: the IOS CLI for routers and switches, a command prompt for PCs. */
@@ -36,7 +36,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
     const sub = term.onData((data) => {
       if (data === '\r') {
         term.write('\r\n');
-        if (line.trim()) history.push(line);
+        if (line.trim() && !shell.masked) history.push(line);
         cursor = history.length;
         const out = shell.execute(line);
         if (out) term.writeln(out);
@@ -46,7 +46,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
       } else if (data === '\u007f') {
         if (line.length) {
           line = line.slice(0, -1);
-          term.write('\b \b');
+          if (!shell.masked) term.write('\b \b');
         }
       } else if (data === '\u001b[A') {
         if (cursor > 0) replaceLine(history[--cursor] ?? '');
@@ -58,7 +58,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
         if (data === '\u001a' && shell.prompt.includes('(config')) shell.execute('end');
         line = '';
         prompt();
-      } else if (data === '?' && shell instanceof CliSession) {
+      } else if (data === '?' && shell.instantHelp) {
         // IOS shows help as soon as "?" is typed, without Enter.
         term.write('?\r\n');
         const out = shell.execute(`${line}?`);
@@ -67,7 +67,8 @@ export function DeviceTerminal({ device }: { device: Device }) {
         term.write(line);
       } else if (data >= ' ' && !data.startsWith('\u001b')) {
         line += data;
-        term.write(data);
+        // Passwords are typed blind, as on a real console.
+        if (!shell.masked) term.write(data);
       }
     });
     return () => {

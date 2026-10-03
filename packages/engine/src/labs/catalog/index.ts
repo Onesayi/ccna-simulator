@@ -1,4 +1,6 @@
 import type { LabDefinition } from '../types';
+import { discoveryLabs } from './discovery';
+import { fhrpLabs } from './fhrp';
 import { infrastructureLabs } from './infrastructure';
 import { ipv6Labs } from './ipv6';
 import { securityLabs } from './security';
@@ -23,6 +25,8 @@ const ORDER = [
   'stp-portfast-bpduguard',
   'etherchannel-lacp',
   'etherchannel-troubleshoot',
+  'cdp-lldp-map',
+  'cdp-native-vlan',
   'static-routing',
   'default-route',
   'floating-static',
@@ -31,6 +35,8 @@ const ORDER = [
   'ospf-single-area',
   'ospf-dr-bdr',
   'ospf-troubleshoot',
+  'hsrp-basic',
+  'hsrp-troubleshoot',
   'dhcp-server',
   'dhcp-relay',
   'nat-pat',
@@ -40,13 +46,17 @@ const ORDER = [
   'acl-troubleshoot',
   'port-security',
   'port-security-errdisable',
+  'dhcp-snooping',
+  'dhcp-snooping-troubleshoot',
+  'ssh-remote-access',
   'syslog-read',
+  'ntp-clock',
   'fix-the-office',
   'capstone-two-sites',
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...routingLabs, ...ospfLabs, ...serviceLabs, ...securityLabs, ...operationsLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...operationsLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),
