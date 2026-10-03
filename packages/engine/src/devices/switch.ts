@@ -1,6 +1,7 @@
 import { BROADCAST_MAC, type MacAddress } from '../core/addressing';
-import type { Frame } from '../core/frames';
-import { Device, type Interface } from './device';
+import type { ArpPacket, Frame, IpPacket } from '../core/frames';
+import { normaliseIfName, type Interface } from './device';
+import { IpDevice } from './ip-device';
 
 export interface MacTableEntry {
   vlan: number;
@@ -12,15 +13,51 @@ export interface MacTableEntry {
 /** MAC address table aging time, matching the Catalyst default of 300 seconds. */
 export const MAC_AGING_MS = 300_000;
 
-/** A Layer 2 switch: VLAN-aware MAC learning, flooding and 802.1Q trunking. */
-export class Switch extends Device {
+/**
+ * A Catalyst-style switch: VLAN-aware MAC learning, flooding and 802.1Q trunking, plus
+ * SVIs (`interface vlan 10`) for management, and inter-VLAN routing once `ip routing` is on.
+ */
+export class Switch extends IpDevice {
   readonly kind = 'switch' as const;
   readonly vlans = new Map<number, string>([[1, 'default']]);
   readonly macTable: MacTableEntry[] = [];
+  /** `ip routing`: turns the switch into a Layer 3 switch that routes between its SVIs. */
+  ipRouting = false;
 
   constructor(hostname: string, portCount = 8) {
     super(hostname);
     for (let i = 1; i <= portCount; i++) this.addInterface(`GigabitEthernet0/${i}`, true);
+    this.configureInterface('Vlan1'); // every Catalyst ships with a (shut down) management SVI
+  }
+
+  get forwarding(): boolean {
+    return this.ipRouting;
+  }
+
+  /** Physical switchports, without SVIs. */
+  get ports(): Interface[] {
+    return this.interfaces.filter((i) => i.kind === 'physical');
+  }
+
+  svi(vlan: number): Interface | undefined {
+    return this.interfaces.find((i) => i.kind === 'svi' && i.vlan === vlan);
+  }
+
+  override configureInterface(name: string): Interface {
+    const existing = this.findIface(name);
+    if (existing) return existing;
+    const m = /^vlan(\d+)$/.exec(normaliseIfName(name));
+    if (!m) throw new Error(`Invalid interface ${name}`);
+    const vlan = Number(m[1]);
+    if (vlan < 1 || vlan > 4094) throw new Error('Invalid VLAN');
+    // SVI autostate: up only while the VLAN exists and some port carrying it is up. New SVIs start shut down.
+    const iface = this.addInterface(`Vlan${vlan}`, false, 'svi', (i) => i.adminUp && this.vlanActive(i.vlan!));
+    iface.vlan = vlan;
+    return iface;
+  }
+
+  private vlanActive(vlan: number): boolean {
+    return this.vlans.has(vlan) && this.ports.some((p) => p.isUp && this.carriesVlan(p, vlan));
   }
 
   receive(on: Interface, frame: Frame): void {
@@ -28,18 +65,35 @@ export class Switch extends Device {
     if (vlan === undefined) return; // dropped: VLAN not allowed on this port
 
     this.learn(vlan, frame.src, on);
+    this.switchFrame(vlan, frame, on);
+  }
 
-    const known = frame.dst === BROADCAST_MAC ? undefined : this.lookup(vlan, frame.dst);
+  /** Forwards a frame within a VLAN. `ingress` is undefined when the frame comes from our own SVI. */
+  private switchFrame(vlan: number, frame: Frame, ingress: Interface | undefined): void {
+    const svi = this.svi(vlan);
+    if (ingress && svi?.isUp && (frame.dst === svi.mac || frame.dst === BROADCAST_MAC)) {
+      const { vlan: _tag, ...untagged } = frame;
+      this.receiveL3(svi, untagged);
+      if (frame.dst === svi.mac) return;
+    }
+
+    const known = frame.dst === BROADCAST_MAC ? undefined : this.macLookup(vlan, frame.dst);
     if (known) {
-      if (known.port !== on) this.egress(known.port, vlan, frame);
+      if (known.port !== ingress) this.egress(known.port, vlan, frame);
       return;
     }
-    for (const port of this.interfaces) {
-      if (port !== on && port.isUp && this.carriesVlan(port, vlan)) this.egress(port, vlan, frame);
+    for (const port of this.ports) {
+      if (port !== ingress && port.isUp && this.carriesVlan(port, vlan)) this.egress(port, vlan, frame);
     }
   }
 
-  lookup(vlan: number, mac: MacAddress): MacTableEntry | undefined {
+  protected override transmitL3(iface: Interface, dstMac: MacAddress, payload: IpPacket | ArpPacket): void {
+    if (iface.kind !== 'svi') return super.transmitL3(iface, dstMac, payload);
+    this.switchFrame(iface.vlan!, { src: iface.mac, dst: dstMac, payload }, undefined);
+  }
+
+  /** MAC table lookup (`lookup` on the base class is the routing table lookup). */
+  macLookup(vlan: number, mac: MacAddress): MacTableEntry | undefined {
     return this.macTable.find((e) => e.vlan === vlan && e.mac === mac && this.now - e.learnedAt < MAC_AGING_MS);
   }
 
@@ -59,7 +113,7 @@ export class Switch extends Device {
     return this.carriesVlan(port, vlan) ? vlan : undefined;
   }
 
-  private carriesVlan(port: Interface, vlan: number): boolean {
+  carriesVlan(port: Interface, vlan: number): boolean {
     if (!this.vlans.has(vlan)) return false;
     if (port.mode === 'access') return port.accessVlan === vlan;
     return port.allowedVlans === 'all' || port.allowedVlans.has(vlan);

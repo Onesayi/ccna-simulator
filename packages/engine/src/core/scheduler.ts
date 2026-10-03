@@ -15,9 +15,17 @@ export class Scheduler {
   private seq = 0;
   now = 0;
 
-  schedule(delayMs: number, label: string, run: () => void): void {
-    this.queue.push({ at: this.now + delayMs, seq: this.seq++, label, run });
+  schedule(delayMs: number, label: string, run: () => void): ScheduledEvent {
+    const event = { at: this.now + delayMs, seq: this.seq++, label, run };
+    this.queue.push(event);
     this.queue.sort((a, b) => a.at - b.at || a.seq - b.seq);
+    return event;
+  }
+
+  /** Removes an event that has not run yet (a timer that is no longer needed). */
+  cancel(event: ScheduledEvent): void {
+    const i = this.queue.indexOf(event);
+    if (i >= 0) this.queue.splice(i, 1);
   }
 
   /** Runs the next event. Returns false when the queue is empty. */

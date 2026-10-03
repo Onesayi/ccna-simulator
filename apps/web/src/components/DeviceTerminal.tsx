@@ -1,46 +1,64 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
-import { CliSession, Pc, type Device } from '@ccna-sim/engine';
+import { CliSession, type Device } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
-/** An xterm.js console bound to one device. PCs get a minimal shell; network devices get the IOS CLI. */
+/** An xterm.js console bound to one device: the IOS CLI for routers and switches, a command prompt for PCs. */
 export function DeviceTerminal({ device }: { device: Device }) {
   const host = useRef<HTMLDivElement>(null);
-  const run = useNetwork((s) => s.run);
 
   useEffect(() => {
-    const term = new Terminal({ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 13, cursorBlink: true });
+    const { shellFor, touch } = useNetwork.getState();
+    const shell = shellFor(device);
+    const term = new Terminal({ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, cursorBlink: true, convertEol: true });
     term.open(host.current!);
-    const cli = new CliSession(device);
-    const prompt = () => (device instanceof Pc ? `C:\\${device.hostname}> ` : cli.prompt);
+    term.focus();
+    const history: string[] = [];
+    let cursor = 0;
     let line = '';
-    term.writeln(`Connected to ${device.hostname}. Type ? for help.`);
-    term.write(prompt());
-
-    const execute = (input: string): string => {
-      if (device instanceof Pc) {
-        const m = /^ping\s+(\S+)/.exec(input.trim());
-        if (!m) return input.trim() ? "Only 'ping <ip>' is available in this preview." : '';
-        const results = device.ping(m[1]!);
-        run();
-        return results.map((r) => (r.success ? `Reply from ${m[1]}: time=${r.rttMs}ms TTL=64` : 'Request timed out.')).join('\r\n');
-      }
-      return cli.execute(input).replace(/\n/g, '\r\n');
+    const prompt = () => term.write(shell.prompt);
+    const replaceLine = (next: string) => {
+      term.write('\b \b'.repeat(line.length));
+      line = next;
+      term.write(line);
     };
+    term.writeln(`Connected to ${device.hostname}. Type ? for help.`);
+    term.writeln('');
+    prompt();
 
     const sub = term.onData((data) => {
       if (data === '\r') {
         term.write('\r\n');
-        const out = execute(line);
-        if (out) term.write(out + '\r\n');
+        if (line.trim()) history.push(line);
+        cursor = history.length;
+        const out = shell.execute(line);
+        if (out) term.writeln(out);
+        touch();
         line = '';
-        term.write(prompt());
+        prompt();
       } else if (data === '\u007f') {
         if (line.length) {
           line = line.slice(0, -1);
           term.write('\b \b');
         }
-      } else if (data >= ' ') {
+      } else if (data === '\u001b[A') {
+        if (cursor > 0) replaceLine(history[--cursor] ?? '');
+      } else if (data === '\u001b[B') {
+        if (cursor < history.length) replaceLine(history[++cursor] ?? '');
+      } else if (data === '\u0003' || data === '\u001a') {
+        // Ctrl+C / Ctrl+Z: drop the line, and leave config mode like IOS "end".
+        term.write('^C\r\n');
+        if (data === '\u001a' && shell.prompt.includes('(config')) shell.execute('end');
+        line = '';
+        prompt();
+      } else if (data === '?' && shell instanceof CliSession) {
+        // IOS shows help as soon as "?" is typed, without Enter.
+        term.write('?\r\n');
+        const out = shell.execute(`${line}?`);
+        if (out) term.writeln(out);
+        prompt();
+        term.write(line);
+      } else if (data >= ' ' && !data.startsWith('\u001b')) {
         line += data;
         term.write(data);
       }
@@ -49,7 +67,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
       sub.dispose();
       term.dispose();
     };
-  }, [device, run]);
+  }, [device]);
 
   return <div ref={host} className="terminal" />;
 }

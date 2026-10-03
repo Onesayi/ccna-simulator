@@ -1,34 +1,172 @@
 import { create } from 'zustand';
-import { Pc, Switch, Topology, type Device } from '@ccna-sim/engine';
+import { CliSession, Pc, Router, Switch, Topology, createShell, type Device, type Shell } from '@ccna-sim/engine';
 
-/** Starter topology: two PCs on one switch. Labs will replace this with their own starting state. */
-function demoTopology(): Topology {
+export type DeviceKind = Device['kind'];
+export interface XY {
+  x: number;
+  y: number;
+}
+
+/** Runs IOS commands from privileged EXEC, used to script the demo topology. */
+function script(device: Device, commands: string): void {
+  const cli = new CliSession(device);
+  cli.execute('enable');
+  for (const line of commands.trim().split('\n')) cli.execute(line.trim());
+}
+
+/**
+ * Demo: two sites joined by R1 and R2 with static routes. Site A uses router-on-a-stick for
+ * VLAN 10 and 20; site B is a single LAN. Everything is configured through the CLI, so
+ * `show running-config` on any device shows how it was built.
+ */
+function demoTopology(): { topology: Topology; positions: Map<string, XY> } {
   const net = new Topology();
-  const sw = net.add(new Switch('SW1'));
+  const r1 = net.add(new Router('R1'));
+  const r2 = net.add(new Router('R2'));
+  const sw1 = net.add(new Switch('SW1'));
+  const sw2 = net.add(new Switch('SW2'));
   const pc1 = net.add(new Pc('PC1'));
   const pc2 = net.add(new Pc('PC2'));
-  net.connect(pc1.nic, sw.iface('Gi0/1'));
-  net.connect(pc2.nic, sw.iface('Gi0/2'));
-  pc1.configure('192.168.10.11', 24);
-  pc2.configure('192.168.10.12', 24);
-  return net;
+  const pc3 = net.add(new Pc('PC3'));
+  net.connect(r1.iface('g0/1'), r2.iface('g0/1'));
+  net.connect(r1.iface('g0/0'), sw1.iface('g0/8'));
+  net.connect(r2.iface('g0/0'), sw2.iface('g0/8'));
+  net.connect(pc1.nic, sw1.iface('g0/1'));
+  net.connect(pc2.nic, sw1.iface('g0/2'));
+  net.connect(pc3.nic, sw2.iface('g0/1'));
+
+  script(r1, `conf t
+    int g0/0
+    no shut
+    int g0/0.10
+    encapsulation dot1q 10
+    ip address 192.168.10.1 255.255.255.0
+    int g0/0.20
+    encapsulation dot1q 20
+    ip address 192.168.20.1 255.255.255.0
+    int g0/1
+    description Link to R2
+    ip address 10.0.12.1 255.255.255.252
+    no shut
+    exit
+    ip route 192.168.30.0 255.255.255.0 10.0.12.2`);
+  script(r2, `conf t
+    int g0/0
+    ip address 192.168.30.1 255.255.255.0
+    no shut
+    int g0/1
+    description Link to R1
+    ip address 10.0.12.2 255.255.255.252
+    no shut
+    exit
+    ip route 192.168.10.0 255.255.255.0 10.0.12.1
+    ip route 192.168.20.0 255.255.255.0 10.0.12.1`);
+  script(sw1, `conf t
+    vlan 10
+    name SALES
+    vlan 20
+    name ENG
+    int g0/1
+    switchport mode access
+    switchport access vlan 10
+    int g0/2
+    switchport mode access
+    switchport access vlan 20
+    int g0/8
+    switchport mode trunk`);
+  pc1.configure('192.168.10.10', 24, '192.168.10.1');
+  pc2.configure('192.168.20.10', 24, '192.168.20.1');
+  pc3.configure('192.168.30.10', 24, '192.168.30.1');
+
+  const positions = new Map<string, XY>([
+    [r1.id, { x: 0, y: 0 }],
+    [r2.id, { x: 420, y: 0 }],
+    [sw1.id, { x: 0, y: 160 }],
+    [sw2.id, { x: 420, y: 160 }],
+    [pc1.id, { x: -120, y: 320 }],
+    [pc2.id, { x: 120, y: 320 }],
+    [pc3.id, { x: 420, y: 320 }],
+  ]);
+  return { topology: net, positions };
+}
+
+const PREFIX: Record<DeviceKind, string> = { router: 'R', switch: 'SW', pc: 'PC' };
+
+function nextHostname(topology: Topology, kind: DeviceKind): string {
+  for (let n = 1; ; n++) if (!topology.find(`${PREFIX[kind]}${n}`)) return `${PREFIX[kind]}${n}`;
 }
 
 interface NetworkState {
   topology: Topology;
-  selected?: Device;
-  /** Bumped after every simulation run so views re-read engine state. */
+  positions: Map<string, XY>;
+  /** One shell per device so the CLI mode survives switching between consoles. */
+  shells: Map<string, Shell>;
+  selectedId?: string;
+  /** Bumped after anything changes engine state so views re-read it. */
   version: number;
-  select: (hostname: string) => void;
-  run: () => void;
+  error?: string;
+  select: (id: string | undefined) => void;
+  shellFor: (device: Device) => Shell;
+  /** Call after running a command: the engine may have changed. */
+  touch: () => void;
+  addDevice: (kind: DeviceKind, at?: XY) => void;
+  removeDevice: (id: string) => void;
+  connect: (aId: string, bId: string) => void;
+  disconnect: (linkId: string) => void;
+  move: (id: string, at: XY) => void;
+  loadDemo: () => void;
+  clear: () => void;
 }
 
 export const useNetwork = create<NetworkState>((set, get) => ({
-  topology: demoTopology(),
+  ...demoTopology(),
+  shells: new Map(),
   version: 0,
-  select: (hostname) => set({ selected: get().topology.get(hostname) }),
-  run: () => {
-    get().topology.run();
+  select: (id) => set({ selectedId: id }),
+  shellFor: (device) => {
+    const { shells } = get();
+    let shell = shells.get(device.id);
+    if (!shell) shells.set(device.id, (shell = createShell(device)));
+    return shell;
+  },
+  touch: () => set((s) => ({ version: s.version + 1 })),
+  addDevice: (kind, at) => {
+    const { topology, positions } = get();
+    const hostname = nextHostname(topology, kind);
+    const device = topology.add(kind === 'router' ? new Router(hostname) : kind === 'switch' ? new Switch(hostname) : new Pc(hostname));
+    const n = topology.devices.size;
+    positions.set(device.id, at ?? { x: 60 + (n % 5) * 140, y: 480 + Math.floor(n / 5) * 120 });
+    set((s) => ({ version: s.version + 1, selectedId: device.id, error: undefined }));
+  },
+  removeDevice: (id) => {
+    const { topology, positions, shells, selectedId } = get();
+    const device = topology.devices.get(id);
+    if (!device) return;
+    topology.remove(device);
+    positions.delete(id);
+    shells.delete(id);
+    set((s) => ({ version: s.version + 1, selectedId: selectedId === id ? undefined : selectedId }));
+  },
+  connect: (aId, bId) => {
+    const { topology } = get();
+    const a = topology.devices.get(aId);
+    const b = topology.devices.get(bId);
+    if (!a || !b || a === b) return;
+    const [pa] = a.freePorts();
+    const [pb] = b.freePorts();
+    if (!pa || !pb) return set({ error: `${!pa ? a.hostname : b.hostname} has no free ports` });
+    topology.connect(pa, pb);
+    set((s) => ({ version: s.version + 1, error: undefined }));
+  },
+  disconnect: (linkId) => {
+    const { topology } = get();
+    const link = topology.links.find((l) => l.id === linkId);
+    if (link) topology.disconnect(link);
     set((s) => ({ version: s.version + 1 }));
   },
+  move: (id, at) => {
+    get().positions.set(id, at);
+  },
+  loadDemo: () => set((s) => ({ ...demoTopology(), shells: new Map(), selectedId: undefined, version: s.version + 1, error: undefined })),
+  clear: () => set((s) => ({ topology: new Topology(), positions: new Map(), shells: new Map(), selectedId: undefined, version: s.version + 1, error: undefined })),
 }));

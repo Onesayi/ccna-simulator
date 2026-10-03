@@ -27,8 +27,8 @@ describe('single switch', () => {
   it('learns both MAC addresses on the right ports', () => {
     l.pc1.ping('192.168.10.12', 1);
     l.net.run();
-    expect(l.sw.lookup(1, l.pc1.nic.mac)?.port.name).toBe('GigabitEthernet0/1');
-    expect(l.sw.lookup(1, l.pc2.nic.mac)?.port.name).toBe('GigabitEthernet0/2');
+    expect(l.sw.macLookup(1, l.pc1.nic.mac)?.port.name).toBe('GigabitEthernet0/1');
+    expect(l.sw.macLookup(1, l.pc2.nic.mac)?.port.name).toBe('GigabitEthernet0/2');
   });
 
   it('isolates hosts placed in different VLANs', () => {
