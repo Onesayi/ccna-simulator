@@ -27,6 +27,8 @@ export class Router extends IpDevice {
   });
   /** Telnet and SSH answer on the VTY lines. */
   protected override readonly listeningPorts = [22, 23];
+  /** `ipv6 unicast-routing`. */
+  ipv6Routing = false;
   /** DHCP client interfaces that were down at the last round, so a lease is requested when they come up. */
   private readonly dhcpWasDown = new Set<Interface>();
 
@@ -37,6 +39,10 @@ export class Router extends IpDevice {
 
   get forwarding(): boolean {
     return true;
+  }
+
+  protected override get routesIpv6(): boolean {
+    return this.ipv6Routing;
   }
 
   override configureInterface(name: string): Interface {
@@ -69,6 +75,7 @@ export class Router extends IpDevice {
   // ---------------------------------------------------------------- control plane rounds
 
   override tick(): void {
+    super.tick();
     for (const p of this.ospf.values()) p.tick();
     for (const [iface, client] of this.dhcpClients) {
       if (!iface.isUp) this.dhcpWasDown.add(iface);

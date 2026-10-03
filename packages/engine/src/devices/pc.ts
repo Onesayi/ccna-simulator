@@ -1,4 +1,5 @@
 import { BROADCAST_MAC, ipToInt, type Ipv4Address } from '../core/addressing';
+import { isLinkLocal, normaliseIpv6, type Ipv6Address } from '../core/ipv6';
 import type { DhcpMessage, Frame, UdpPacket } from '../core/frames';
 import { DhcpClient } from '../services/dhcp';
 import type { Interface } from './device';
@@ -15,6 +16,7 @@ export class Pc extends IpDevice {
   readonly nic: Interface;
   protected override readonly queueDuringArp = true;
   protected override readonly initialTtl = 128;
+  protected override readonly ipv6HopLimit = 128;
   protected override readonly listeningPorts = [80, 443];
   /** True when the address comes from DHCP rather than static configuration. */
   dhcp = false;
@@ -27,6 +29,8 @@ export class Pc extends IpDevice {
   constructor(hostname: string) {
     super(hostname);
     this.nic = this.addInterface('Ethernet0', true);
+    // Windows runs IPv6 out of the box: a link-local address, and no global one until configured.
+    this.nic.ipv6 = { enabled: true, addresses: [] };
     this.client = new DhcpClient(this.nic.mac, {
       send: (msg) => this.broadcast({ kind: 'udp', src: '0.0.0.0', dst: LIMITED_BROADCAST, ttl: 128, srcPort: 68, dstPort: 67, dhcp: msg }),
       bound: (ack) => {
@@ -68,6 +72,32 @@ export class Pc extends IpDevice {
     this.dhcp = false;
     this.apipa = false;
     this.lease = undefined;
+  }
+
+  /** A static IPv6 address and, optionally, a default gateway (often the router's link-local address). */
+  configureIpv6(address: Ipv6Address, prefix: number, gateway?: Ipv6Address): void {
+    const v6 = this.nic.ipv6!;
+    v6.autoconfig = false;
+    v6.addresses = [{ address: normaliseIpv6(address), prefix }];
+    this.ipv6.gateway = gateway ? normaliseIpv6(gateway) : undefined;
+  }
+
+  /** SLAAC: ask for a router advertisement and build addresses from its /64 prefixes with EUI-64. */
+  autoconfigureIpv6(): void {
+    const v6 = this.nic.ipv6!;
+    v6.autoconfig = true;
+    v6.addresses = v6.addresses.filter((a) => a.slaac);
+    this.ipv6.gateway = undefined;
+    this.ipv6.solicit(this.nic);
+  }
+
+  get gateway6(): Ipv6Address | undefined {
+    return this.ipv6.gateway;
+  }
+
+  /** True when the default gateway is a link-local address, as SLAAC sets it. */
+  get gateway6IsLinkLocal(): boolean {
+    return this.ipv6.gateway !== undefined && isLinkLocal(this.ipv6.gateway);
   }
 
   /** Switches the NIC to DHCP and starts DORA (`ipconfig /renew`). Run the topology to finish it. */

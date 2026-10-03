@@ -145,8 +145,69 @@ export interface ArpPacket {
 /** IP packets, i.e. everything that is routed (ARP is not). */
 export type IpPacket = IcmpPacket | TcpPacket | UdpPacket | OspfPacket;
 
+// ---------------------------------------------------------------- Layer 2 control protocols
+
+/** A bridge ID: priority (with the VLAN added as the system ID extension) then the switch MAC. */
+export interface BridgeId {
+  priority: number;
+  mac: MacAddress;
+}
+
+/** A Rapid PVST+ BPDU. PVST+ sends one per VLAN, so the VLAN travels in the BPDU itself. */
+export interface BpduPacket {
+  kind: 'bpdu';
+  vlan: number;
+  root: BridgeId;
+  /** Cost from the sender to the root. */
+  rootCost: number;
+  bridge: BridgeId;
+  /** Port priority and number, as `show spanning-tree` prints them ("128.1"). */
+  portId: { priority: number; number: number };
+  /** Bridges the BPDU has crossed since the root. Stale information dies at max age (20). */
+  messageAge: number;
+}
+
+/** PAgP or LACP: each member port tells the far end how it is set up, so both sides agree to bundle. */
+interface ChannelPduFields {
+  mode: 'active' | 'passive' | 'desirable' | 'auto';
+  /** The sending switch, so ports wired to different switches never bundle together. */
+  system: MacAddress;
+  group: number;
+}
+
+export type ChannelPdu = (ChannelPduFields & { kind: 'lacp' }) | (ChannelPduFields & { kind: 'pagp' });
+
+export const STP_MAC: MacAddress = '0100.0ccc.cccd';
+export const SLOW_PROTOCOLS_MAC: MacAddress = '0180.c200.0002';
+
+// ---------------------------------------------------------------- IPv6
+
+export type Icmpv6Type = 'echo-request' | 'echo-reply' | 'time-exceeded' | 'unreachable' | 'ns' | 'na' | 'rs' | 'ra';
+
+/**
+ * IPv6 with an ICMPv6 payload. Neighbor Discovery (NS, NA, RS, RA) replaces ARP and carries
+ * SLAAC, so ICMPv6 is the only IPv6 payload the engine needs for ping, traceroute and addressing.
+ */
+export interface Icmpv6Packet {
+  kind: 'icmpv6';
+  src: string;
+  dst: string;
+  hopLimit: number;
+  type: Icmpv6Type;
+  id: number;
+  seq: number;
+  /** NS and NA: the address being resolved. */
+  target?: string;
+  /** NA and RA: the sender's link-layer address. */
+  mac?: MacAddress;
+  /** RA: on-link prefixes for SLAAC. */
+  prefixes?: { prefix: string; length: number }[];
+  /** Errors only: the packet that caused the error. */
+  original?: Icmpv6Packet;
+}
+
 /** Layer 3 payloads the engine understands. New protocols extend this union. */
-export type Packet = ArpPacket | IpPacket;
+export type Packet = ArpPacket | IpPacket | Icmpv6Packet | BpduPacket | ChannelPdu;
 
 /** An Ethernet II frame, optionally carrying an 802.1Q tag while on a trunk. */
 export interface Frame {

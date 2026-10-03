@@ -1,11 +1,14 @@
 import { BROADCAST_MAC, type MacAddress } from '../core/addressing';
-import type { ArpPacket, Frame, IpPacket } from '../core/frames';
-import { normaliseIfName, type Interface } from './device';
+import { SLOW_PROTOCOLS_MAC, STP_MAC, type BpduPacket, type ChannelPdu, type Frame, type Packet } from '../core/frames';
+import { channelProtocol, copyL2, negotiates, sameL2, type ChannelView, type MemberFlag } from '../switching/etherchannel';
+import { SpanningTree } from '../switching/stp';
+import { normaliseIfName, shortName, type ErrDisableReason, type Interface } from './device';
 import { IpDevice } from './ip-device';
 
 export interface MacTableEntry {
   vlan: number;
   mac: MacAddress;
+  /** A physical port, or the port-channel a bundled member belongs to. */
   port: Interface;
   learnedAt: number;
 }
@@ -16,6 +19,8 @@ export const MAC_AGING_MS = 300_000;
 /**
  * A Catalyst-style switch: VLAN-aware MAC learning, flooding and 802.1Q trunking, plus
  * SVIs (`interface vlan 10`) for management, and inter-VLAN routing once `ip routing` is on.
+ * Runs per-VLAN spanning tree, bundles ports into EtherChannels (LACP, PAgP or static) and
+ * enforces port security on access ports.
  */
 export class Switch extends IpDevice {
   readonly kind = 'switch' as const;
@@ -23,20 +28,82 @@ export class Switch extends IpDevice {
   readonly macTable: MacTableEntry[] = [];
   /** `ip routing`: turns the switch into a Layer 3 switch that routes between its SVIs. */
   ipRouting = false;
+  readonly stp: SpanningTree;
+  /** LACP and PAgP messages heard on each member port in the current round. */
+  private channelHeard = new Map<Interface, ChannelPdu>();
+  /** Member flags from the last round, for `show etherchannel summary`. */
+  private memberFlags = new Map<Interface, MemberFlag>();
+  /** Port-channel line protocol at the end of the last round, to log changes. */
+  private channelUp = new Map<Interface, boolean>();
 
   constructor(hostname: string, portCount = 8) {
     super(hostname);
     for (let i = 1; i <= portCount; i++) this.addInterface(`GigabitEthernet0/${i}`, true);
     this.configureInterface('Vlan1'); // every Catalyst ships with a (shut down) management SVI
+    const sw = this;
+    this.stp = new SpanningTree({
+      get bridgeMac() {
+        return sw.bridgeMac;
+      },
+      log: this.log,
+      vlanIds: () => [...this.vlans.keys()],
+      logicalPorts: () => this.logicalPorts(),
+      carriesVlan: (p, v) => this.carriesVlan(p, v),
+      sendBpdu: (port, bpdu) => this.egress(port, bpdu.vlan, { src: port.mac, dst: STP_MAC, payload: bpdu }),
+      defaultCost: (p) => (p.kind === 'port-channel' && this.bundledMembers(p).length > 1 ? 3 : 4),
+      portNumber: (p) => (p.kind === 'port-channel' ? 64 : 0) + Number(/(\d+)$/.exec(p.name)?.[1] ?? 0),
+      flushMacs: (vlan) => this.flushMacs((e) => e.vlan === vlan && !this.stp.portfast(e.port)),
+    });
   }
 
   get forwarding(): boolean {
     return this.ipRouting;
   }
 
+  /** The switch's base MAC, used in its bridge ID. */
+  get bridgeMac(): MacAddress {
+    return this.interfaces[0]!.mac;
+  }
+
   /** Physical switchports, without SVIs. */
   get ports(): Interface[] {
     return this.interfaces.filter((i) => i.kind === 'physical');
+  }
+
+  get portChannels(): Interface[] {
+    return this.interfaces.filter((i) => i.kind === 'port-channel');
+  }
+
+  /** What frames are switched between: unbundled physical ports and port-channels with a bundled member. */
+  logicalPorts(): Interface[] {
+    return [...this.ports.filter((p) => !p.bundled && !this.suspended(p)), ...this.portChannels.filter((po) => this.bundledMembers(po).length > 0)];
+  }
+
+  /** A member whose settings do not match its port-channel passes no traffic at all. */
+  private suspended(p: Interface): boolean {
+    return p.channelGroup !== undefined && this.memberFlags.get(p) === 's';
+  }
+
+  members(po: Interface): Interface[] {
+    const id = this.channelId(po);
+    return this.ports.filter((p) => p.channelGroup?.id === id);
+  }
+
+  bundledMembers(po: Interface): Interface[] {
+    return this.members(po).filter((p) => p.bundled && p.isUp);
+  }
+
+  portChannel(id: number): Interface | undefined {
+    return this.portChannels.find((po) => this.channelId(po) === id);
+  }
+
+  private channelId(po: Interface): number {
+    return Number(/(\d+)$/.exec(po.name)![1]);
+  }
+
+  /** The port a frame from `port` belongs to: its port-channel while bundled, otherwise itself. */
+  logicalOf(port: Interface): Interface {
+    return port.bundled && port.channelGroup ? (this.portChannel(port.channelGroup.id) ?? port) : port;
   }
 
   svi(vlan: number): Interface | undefined {
@@ -46,7 +113,10 @@ export class Switch extends IpDevice {
   override configureInterface(name: string): Interface {
     const existing = this.findIface(name);
     if (existing) return existing;
-    const m = /^vlan(\d+)$/.exec(normaliseIfName(name));
+    const canonical = normaliseIfName(name);
+    const po = /^port-channel(\d+)$/.exec(canonical);
+    if (po) return this.createPortChannel(Number(po[1]));
+    const m = /^vlan(\d+)$/.exec(canonical);
     if (!m) throw new Error(`Invalid interface ${name}`);
     const vlan = Number(m[1]);
     if (vlan < 1 || vlan > 4094) throw new Error('Invalid VLAN');
@@ -56,16 +126,129 @@ export class Switch extends IpDevice {
     return iface;
   }
 
-  private vlanActive(vlan: number): boolean {
-    return this.vlans.has(vlan) && this.ports.some((p) => p.isUp && this.carriesVlan(p, vlan));
+  private createPortChannel(id: number): Interface {
+    if (id < 1 || id > 48) throw new Error('Invalid port-channel number');
+    return this.addInterface(`Port-channel${id}`, true, 'port-channel', (i) => i.adminUp && this.bundledMembers(i).length > 0);
   }
 
-  receive(on: Interface, frame: Frame): void {
-    const vlan = this.ingressVlan(on, frame);
-    if (vlan === undefined) return; // dropped: VLAN not allowed on this port
+  /**
+   * `channel-group <id> mode <mode>`. Creates the port-channel from the member's settings, or
+   * copies the existing port-channel's settings onto the member, like IOS does.
+   */
+  joinChannel(port: Interface, id: number, mode: NonNullable<Interface['channelGroup']>['mode']): string | undefined {
+    if (port.kind !== 'physical') throw new Error('Invalid input detected');
+    const existing = this.portChannel(id);
+    const others = existing ? this.members(existing).filter((p) => p !== port) : [];
+    if (others.some((p) => channelProtocol(p.channelGroup!.mode) !== channelProtocol(mode))) {
+      throw new Error(`Command rejected (Channel protocol mismatch for interface ${port.name} in group ${id}): the interface can not be added to the channel group`);
+    }
+    port.channelGroup = { id, mode };
+    port.bundled = false;
+    if (existing) {
+      copyL2(existing, port);
+      return undefined;
+    }
+    const po = this.createPortChannel(id);
+    copyL2(port, po);
+    return `Creating a port-channel interface Port-channel ${id}`;
+  }
 
-    this.learn(vlan, frame.src, on);
-    this.switchFrame(vlan, frame, on);
+  leaveChannel(port: Interface): void {
+    port.channelGroup = undefined;
+    port.bundled = undefined;
+    this.memberFlags.delete(port);
+  }
+
+  /** Switchport settings typed on a port-channel apply to its members too. */
+  syncChannel(port: Interface): void {
+    if (port.kind !== 'port-channel') return;
+    for (const m of this.members(port)) copyL2(port, m);
+  }
+
+  channels(): ChannelView[] {
+    return this.portChannels.map((po) => {
+      const members = this.members(po);
+      return {
+        id: this.channelId(po),
+        po,
+        members: members.map((port) => ({ port, flag: this.memberFlags.get(port) ?? 'D' })),
+        protocol: members[0] ? channelProtocol(members[0].channelGroup!.mode) : 'on',
+      };
+    });
+  }
+
+  private vlanActive(vlan: number): boolean {
+    return this.vlans.has(vlan) && this.logicalPorts().some((p) => p.isUp && this.carriesVlan(p, vlan));
+  }
+
+  // ---------------------------------------------------------------- frames in
+
+  receive(on: Interface, frame: Frame): void {
+    const p = frame.payload;
+    if (p.kind === 'lacp' || p.kind === 'pagp') {
+      if (on.channelGroup) this.channelHeard.set(on, p);
+      return;
+    }
+    if (this.suspended(on)) return;
+    if (on.portSecurity?.enabled && !this.portSecurityAllows(on, frame)) return;
+    if (p.kind === 'bpdu') return this.receiveBpdu(on, p);
+
+    const ingress = this.logicalOf(on);
+    const vlan = this.ingressVlan(ingress, frame);
+    if (vlan === undefined) return; // dropped: VLAN not allowed on this port
+    if (!this.stp.forwarding(ingress, vlan)) return; // a discarding port neither learns nor forwards
+
+    this.learn(vlan, frame.src, ingress);
+    this.switchFrame(vlan, frame, ingress);
+  }
+
+  private receiveBpdu(on: Interface, bpdu: BpduPacket): void {
+    if (this.stp.bpduGuard(on)) {
+      this.log.push(`%SPANTREE-2-BLOCK_BPDUGUARD: Received BPDU on port ${on.name} with BPDU Guard enabled. Disabling port.`);
+      return this.errDisable(on, 'bpduguard');
+    }
+    this.stp.receive(this.logicalOf(on), bpdu);
+  }
+
+  /** Port security: learn secure addresses up to the maximum, and act on a violation. */
+  private portSecurityAllows(port: Interface, frame: Frame): boolean {
+    const ps = port.portSecurity!;
+    if (port.mode !== 'access') return true;
+    const vlan = port.accessVlan;
+    ps.lastSource = { mac: frame.src, vlan };
+    if (ps.addresses.some((a) => a.mac === frame.src)) return true;
+    if (ps.addresses.length < ps.maximum) {
+      ps.addresses.push({ mac: frame.src, vlan, type: ps.sticky ? 'sticky' : 'dynamic' });
+      return true;
+    }
+    if (ps.violation === 'protect') return false;
+    ps.violations++;
+    if (ps.violation === 'restrict') {
+      this.log.push(`%PORT_SECURITY-2-PSECURE_VIOLATION: Security violation occurred, caused by MAC address ${frame.src} on port ${port.name}.`);
+      return false;
+    }
+    this.errDisable(port, 'psecure-violation');
+    this.log.push(`%PORT_SECURITY-2-PSECURE_VIOLATION: Security violation occurred, caused by MAC address ${frame.src} on port ${port.name}.`);
+    return false;
+  }
+
+  /** Shuts a port down after a violation. `shutdown` followed by `no shutdown` recovers it. */
+  errDisable(port: Interface, reason: ErrDisableReason): void {
+    if (port.errDisabled) return;
+    port.errDisabled = reason;
+    const short = shortName(port.name);
+    this.log.push(
+      `%PM-4-ERR_DISABLE: ${reason} error detected on ${short}, putting ${short} in err-disable state`,
+      `%LINEPROTO-5-UPDOWN: Line protocol on Interface ${port.name}, changed state to down`,
+      `%LINK-3-UPDOWN: Interface ${port.name}, changed state to down`,
+    );
+    this.clearDynamicSecure(port);
+    this.flushMacs((e) => e.port === port);
+  }
+
+  private clearDynamicSecure(port: Interface): void {
+    const ps = port.portSecurity;
+    if (ps) ps.addresses = ps.addresses.filter((a) => a.type !== 'dynamic');
   }
 
   /** Forwards a frame within a VLAN. `ingress` is undefined when the frame comes from our own SVI. */
@@ -79,15 +262,15 @@ export class Switch extends IpDevice {
 
     const known = frame.dst === BROADCAST_MAC ? undefined : this.macLookup(vlan, frame.dst);
     if (known) {
-      if (known.port !== ingress) this.egress(known.port, vlan, frame);
+      if (known.port !== ingress && this.stp.forwarding(known.port, vlan)) this.egress(known.port, vlan, frame);
       return;
     }
-    for (const port of this.ports) {
-      if (port !== ingress && port.isUp && this.carriesVlan(port, vlan)) this.egress(port, vlan, frame);
+    for (const port of this.logicalPorts()) {
+      if (port !== ingress && port.isUp && this.carriesVlan(port, vlan) && this.stp.forwarding(port, vlan)) this.egress(port, vlan, frame);
     }
   }
 
-  protected override transmitL3(iface: Interface, dstMac: MacAddress, payload: IpPacket | ArpPacket): void {
+  protected override transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet): void {
     if (iface.kind !== 'svi') return super.transmitL3(iface, dstMac, payload);
     this.switchFrame(iface.vlan!, { src: iface.mac, dst: dstMac, payload }, undefined);
   }
@@ -107,6 +290,10 @@ export class Switch extends IpDevice {
     }
   }
 
+  private flushMacs(match: (e: MacTableEntry) => boolean): void {
+    for (let k = this.macTable.length - 1; k >= 0; k--) if (match(this.macTable[k]!)) this.macTable.splice(k, 1);
+  }
+
   private ingressVlan(port: Interface, frame: Frame): number | undefined {
     if (port.mode === 'access') return frame.vlan === undefined ? port.accessVlan : undefined;
     const vlan = frame.vlan ?? port.nativeVlan;
@@ -119,9 +306,70 @@ export class Switch extends IpDevice {
     return port.allowedVlans === 'all' || port.allowedVlans.has(vlan);
   }
 
+  /** Sends a frame out of a logical port: tagged on a trunk outside the native VLAN, hashed across a bundle. */
   private egress(port: Interface, vlan: number, frame: Frame): void {
     const tagged = port.mode === 'trunk' && vlan !== port.nativeVlan;
     const { vlan: _drop, ...untagged } = frame;
-    this.send(port, tagged ? { ...untagged, vlan } : untagged);
+    const out = tagged ? { ...untagged, vlan } : untagged;
+    if (port.kind !== 'port-channel') return this.send(port, out);
+    const members = this.bundledMembers(port);
+    // src-dst-mac load balancing: the same conversation always uses the same member link.
+    const hash = parseInt(frame.src.slice(-4), 16) ^ parseInt(frame.dst.slice(-4), 16);
+    const member = members[hash % members.length];
+    if (member) this.send(member, out);
+  }
+
+  // ---------------------------------------------------------------- control plane rounds
+
+  override tick(): void {
+    this.channelHeard.clear();
+    for (const p of this.ports) {
+      const cg = p.channelGroup;
+      // A suspended member stays quiet, so the far end does not bundle a link this end will not use.
+      if (!cg || cg.mode === 'on' || !p.isUp || this.suspended(p)) continue;
+      const kind = channelProtocol(cg.mode) as 'lacp' | 'pagp';
+      this.send(p, { src: p.mac, dst: SLOW_PROTOCOLS_MAC, payload: { kind, mode: cg.mode as ChannelPdu['mode'], system: this.bridgeMac, group: cg.id } });
+    }
+    this.stp.tick();
+  }
+
+  override settle(): boolean {
+    let changed = this.settleChannels();
+    changed = this.stp.settle() || changed;
+    for (const p of this.ports) if (!p.isUp) this.clearDynamicSecure(p);
+    return changed;
+  }
+
+  /** Decides which member ports are bundled, from what the far end said this round. */
+  private settleChannels(): boolean {
+    let changed = false;
+    for (const po of this.portChannels) {
+      const wasUp = this.channelUp.get(po) ?? false;
+      let partner: string | undefined;
+      for (const m of this.members(po)) {
+        const mode = m.channelGroup!.mode;
+        const heard = this.channelHeard.get(m);
+        let flag: MemberFlag;
+        if (!m.isUp) flag = 'D';
+        else if (mode !== 'on' && !negotiates(mode, heard)) flag = 'I';
+        else if (!sameL2(m, po)) flag = 's';
+        else if (heard && partner !== undefined && heard.system !== partner) flag = 's';
+        else flag = 'P';
+        if (flag === 'P' && heard) partner ??= heard.system;
+        const bundled = flag === 'P';
+        if (bundled !== m.bundled) {
+          m.bundled = bundled;
+          changed = true;
+        }
+        this.memberFlags.set(m, flag);
+      }
+      this.channelUp.set(po, po.isUp);
+      if (po.isUp !== wasUp) {
+        this.log.push(`%LINEPROTO-5-UPDOWN: Line protocol on Interface ${po.name}, changed state to ${po.isUp ? 'up' : 'down'}`);
+        // MACs learned on the members or the old bundle are no longer valid.
+        this.flushMacs((e) => e.port === po || this.members(po).includes(e.port));
+      }
+    }
+    return changed;
   }
 }

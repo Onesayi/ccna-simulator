@@ -22,11 +22,11 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 24 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 33 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
-- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
+- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
 - **Hints, quizzes and solutions.** Objectives carry optional hints, labs include multiple-choice questions on the theory behind them, and every lab has a model answer you can reveal.
 - **Progress tracking.** Completion, checks and hints used are saved in your browser, and the catalog shows progress per blueprint domain.
 - **Shareable links.** Each lab has its own URL, such as `#/labs/floating-static`.
@@ -34,7 +34,7 @@ The **Labs** tab has 24 hands-on labs covering all five domains of the CCNA 200-
 ![A router-on-a-stick lab in progress: the lab sheet grades objectives live while the learner types into R1's console](docs/img/lab.png)
 
 <details>
-<summary>All 24 labs</summary>
+<summary>All 33 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -58,6 +58,15 @@ The **Labs** tab has 24 hands-on labs covering all five domains of the CCNA 200-
 | Keep guests off the servers with a standard ACL | 4.6 |
 | Filter by port with a named extended ACL | 4.6 |
 | Fix the ACLs that broke the WAN (troubleshooting) | 4.6, 3.3.a |
+| Address a router for IPv6 | 1.4 |
+| Route between IPv6 sites with statics | 3.1, 3.2.a, 3.2.b |
+| Fix the IPv6 branch (troubleshooting) | 1.4, 2.4, 3.2 |
+| Choose the root bridge per VLAN | 2.5.a, 2.5.b |
+| Stop a rogue switch with BPDU guard | 2.5.c, 2.5.d |
+| Bundle two links with LACP | 2.1.b, 2.1.c |
+| Fix a port-channel that will not form (troubleshooting) | 2.1.c, 2.4 |
+| Lock down access ports with port security | 4.7.e |
+| Recover a port shut by port security (troubleshooting) | 4.7.e, 2.4 |
 | Read the logs (troubleshooting) | 5.6 |
 | Fix the office network (troubleshooting) | 1.6, 2.4, 3.2.b |
 | Capstone: build two sites from scratch | 2.1, 2.2, 3.2.b |
@@ -69,13 +78,17 @@ The **Labs** tab has 24 hands-on labs covering all five domains of the CCNA 200-
 
 ![SW1 showing its VLANs and 802.1Q trunk from the IOS console](docs/img/vlan-cli.png)
 
-- **Topology canvas**: add routers, switches and PCs, drag between devices to cable them, click a cable to remove it. Cables turn red and dashed while either end is down. A demo network (two sites, router-on-a-stick, static routes) loads on start.
+- **Topology canvas**: add routers, switches and PCs, drag between devices to cable them, click a cable to remove it. Cables turn red and dashed while either end is down, orange and dotted where spanning tree blocks them, and thick when bundled into a port-channel. A demo network (two sites, router-on-a-stick, static routes) loads on start.
 - **Routers**: GigabitEthernet ports that start shut down (a link only comes up when both ends are enabled), loopbacks, 802.1Q sub-interfaces for router-on-a-stick, connected and local routes, static routes by next hop and/or exit interface, default routes, floating statics (administrative distance), proxy ARP, TTL expiry and ICMP unreachables.
 - **OSPFv2 (single area)**: hellos, neighbor states, DR/BDR election that never preempts, router and network LSAs, SPF with equal-cost paths, router ID selection, passive interfaces, point-to-point links, cost from bandwidth, `default-information originate`, and the log messages for adjacency changes, duplicate router IDs and area mismatches.
 - **IP services**: a DHCP server with pools and excluded ranges, DHCP relay (`ip helper-address`), DHCP clients on PCs and router ports; static NAT, dynamic NAT and PAT; numbered and named standard and extended ACLs with per-line match counters; telnet and TCP port checks for testing filters; and a syslog buffer (`show logging`).
 - **Switches**: VLAN-aware MAC learning and flooding, 802.1Q trunks with native and allowed VLANs, MAC aging, SVIs with autostate, `ip default-gateway`, and inter-VLAN routing with `ip routing`.
-- **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ping [-n count]`, `tracert`, `arp -a`, `telnet` and `curl`.
-- **IOS CLI**: mode hierarchy with abbreviations (`conf t`, `sh ip int br`), `?` help, `do` from config mode, `interface`, `ip address`, `encapsulation dot1q`, `ip route`, `ip routing`, VLAN and switchport commands, `ping`, `traceroute`, and `show running-config`, `ip route`, `ip arp`, `ip interface brief`, `vlan brief`, `mac address-table`, `interfaces trunk`, `interfaces <if> switchport`, plus `router ospf`, `ip dhcp pool`, `ip nat`, `access-list` and `ip access-list` with their `show` and `clear` commands. Output follows real IOS formatting, including the `.!!!!` first ping while ARP resolves.
+- **Spanning tree (PVST+ / Rapid PVST+)**: per-VLAN root election by bridge ID, root/designated/alternate/backup roles, path cost and port priority, `root primary/secondary`, PortFast, BPDU guard (err-disable) and root guard, with `show spanning-tree` output.
+- **EtherChannel**: LACP (active/passive), PAgP (desirable/auto) and static `on` bundles, member suspension on mismatched settings, load sharing, and `show etherchannel summary`.
+- **Port security**: maximum addresses, static, dynamic and sticky secure MACs, protect/restrict/shutdown violations, err-disabled ports and `show port-security`.
+- **IPv6**: global, EUI-64 and link-local addresses, Neighbor Discovery, router advertisements and SLAAC on PCs, `ipv6 unicast-routing`, static routes (including link-local next hops), ping and traceroute.
+- **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ipv6config` (static or SLAAC), `ping [-n count]`, `tracert`, `arp -a`, `telnet` and `curl`.
+- **IOS CLI**: mode hierarchy with abbreviations (`conf t`, `sh ip int br`), `?` help, `do` from config mode, `interface`, `interface range`, `ip address`, `encapsulation dot1q`, `ip route`, `ip routing`, VLAN and switchport commands, `ping`, `traceroute`, and `show running-config`, `ip route`, `ip arp`, `ip interface brief`, `vlan brief`, `mac address-table`, `interfaces trunk`, `interfaces <if> switchport`, plus `router ospf`, `ip dhcp pool`, `ip nat`, `access-list` and `ip access-list`, `spanning-tree`, `channel-group`, `switchport port-security` and the `ipv6` commands, with their `show` and `clear` commands. Output follows real IOS formatting, including the `.!!!!` first ping while ARP resolves.
 - A frame trace of every hop, ready for the packet capture panel.
 
 See [docs/design.md](docs/design.md) for the full feature map and roadmap.
@@ -116,7 +129,7 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | 100+ specs written as small labs: switching, trunks, routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| Engine | Vitest | nearly 300 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
 | App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, completing a lab end to end, hints, solutions and deep links. |
 
 ```bash

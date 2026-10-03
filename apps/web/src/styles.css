@@ -40,6 +40,8 @@ header { flex-wrap: wrap; }
 .device-node .react-flow__handle { width: 8px; height: 8px; background: var(--muted); opacity: 0.5; }
 .react-flow__edge.link-up .react-flow__edge-path { stroke: #22a06b; stroke-width: 2; }
 .react-flow__edge.link-down .react-flow__edge-path { stroke: #d1453b; stroke-width: 2; stroke-dasharray: 6 4; }
+.react-flow__edge.link-blocked .react-flow__edge-path { stroke: #d97706; stroke-width: 2; stroke-dasharray: 2 4; }
+.react-flow__edge.link-bundled .react-flow__edge-path { stroke-width: 4; }
 .react-flow__edge-text { font-size: 11px; fill: var(--text); }
 .react-flow__edge-textbg { fill: var(--panel); }
 

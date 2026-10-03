@@ -1,4 +1,5 @@
 import { isValidIp, parsePrefix, prefixToMask } from '../core/addressing';
+import { isLinkLocal, isValidIpv6, normaliseIpv6, parseIpv6Prefix } from '../core/ipv6';
 import type { Device } from '../devices/device';
 import type { PingResult, TracerouteResult } from '../devices/ip-device';
 import { Pc } from '../devices/pc';
@@ -9,8 +10,11 @@ const PC_HELP = `Available commands:
   ipconfig <ip> <mask|/len> [gateway]    Set a static IP address (Packet Tracer style)
   ipconfig /renew                        Get an address from DHCP
   ipconfig /release                      Give the DHCP address back
-  ping [-n count] <ip>                   Send ICMP echo requests
-  tracert <ip>                           Trace the route to a host
+  ipv6config                             Show the IPv6 configuration
+  ipv6config <ipv6>/<len> [gateway]      Set a static IPv6 address
+  ipv6config autoconfig                  Get an IPv6 address with SLAAC
+  ping [-n count] <ip|ipv6>              Send ICMP echo requests
+  tracert <ip|ipv6>                      Trace the route to a host
   arp -a                                 Show the ARP cache
   arp -d                                 Clear the ARP cache
   telnet <ip> [port]                     Open a TCP connection (default port 23)
@@ -40,6 +44,8 @@ export class PcShell implements Shell {
         return PC_HELP;
       case 'ipconfig':
         return this.ipconfigCommand(args);
+      case 'ipv6config':
+        return this.ipv6config(args);
       case 'ping':
         return this.ping(args);
       case 'tracert':
@@ -81,11 +87,15 @@ export class PcShell implements Shell {
     const ip = pc.nic.ip;
     const lines = ['', 'Ethernet0 Connection:(default port)', '', `   Connection-specific DNS Suffix..: ${pc.lease?.domain ?? ''}`];
     lines.push(`   Physical Address................: ${pc.nic.mac.toUpperCase()}`);
+    lines.push(`   Link-local IPv6 Address.........: ${pc.ipv6.linkLocal(pc.nic).toUpperCase()}`);
+    for (const a of pc.ipv6.globals(pc.nic)) lines.push(`   IPv6 Address....................: ${a.address.toUpperCase()}/${a.prefix}`);
     lines.push(
       `   ${pc.apipa ? 'Autoconfiguration IPv4 Address..' : 'IPv4 Address....................'}: ${ip?.address ?? '0.0.0.0'}`,
       `   Subnet Mask.....................: ${ip ? prefixToMask(ip.prefix) : '0.0.0.0'}`,
-      `   Default Gateway.................: ${pc.defaultGateway ?? '0.0.0.0'}`,
     );
+    // Windows lists the IPv6 gateway first, with the IPv4 one underneath.
+    const gateways = [pc.gateway6?.toUpperCase(), pc.defaultGateway ?? (pc.gateway6 ? undefined : '0.0.0.0')].filter((g): g is string => !!g);
+    lines.push(`   Default Gateway.................: ${gateways[0]}`, ...gateways.slice(1).map((g) => `${' '.repeat(37)}${g}`));
     if (all) {
       lines.push(`   DHCP Enabled....................: ${pc.dhcp ? 'Yes' : 'No'}`);
       if (pc.lease?.serverId) lines.push(`   DHCP Server.....................: ${pc.lease.serverId}`);
@@ -109,6 +119,34 @@ export class PcShell implements Shell {
     return '';
   }
 
+  private ipv6config(args: string[]): string {
+    const pc = this.pc;
+    const [first, gateway] = args;
+    if (first && /^\/?auto/i.test(first)) {
+      pc.autoconfigureIpv6();
+      pc.network?.run();
+      if (!pc.ipv6.globals(pc.nic).length) return 'No router advertisement received. Only the link-local address is configured.';
+    } else if (first) {
+      let parsed: { address: string; prefix: number };
+      try {
+        parsed = parseIpv6Prefix(first);
+      } catch {
+        return 'Invalid Command.';
+      }
+      if (isLinkLocal(parsed.address)) return 'Use a global or unique local address; the link-local address is automatic.';
+      if (gateway && !isValidIpv6(gateway)) return 'Invalid gateway address.';
+      pc.configureIpv6(parsed.address, parsed.prefix, gateway);
+      return '';
+    }
+    const v6 = pc.nic.ipv6!;
+    const lines = ['', 'Ethernet0 Connection:(default port)', ''];
+    lines.push(`   IPv6 configuration..............: ${v6.autoconfig ? 'Automatic (SLAAC)' : 'Static'}`);
+    lines.push(`   Link-local IPv6 Address.........: ${pc.ipv6.linkLocal(pc.nic).toUpperCase()}`);
+    for (const a of pc.ipv6.globals(pc.nic)) lines.push(`   IPv6 Address....................: ${a.address.toUpperCase()}/${a.prefix}`);
+    lines.push(`   Default Gateway.................: ${pc.gateway6?.toUpperCase() ?? '::'}`, '');
+    return lines.join('\n');
+  }
+
   private ping(args: string[]): string {
     let count = 4;
     const n = args.findIndex((a) => a.toLowerCase() === '-n');
@@ -117,17 +155,17 @@ export class PcShell implements Shell {
       args = args.filter((_, i) => i !== n && i !== n + 1);
       if (!Number.isInteger(count) || count < 1 || count > 100) return 'Bad value for option -n.';
     }
-    const dst = args[0];
-    if (!dst || !isValidIp(dst)) return `Ping request could not find host ${dst ?? ''}. Please check the name and try again.`;
-    const results = this.pc.ping(dst, count);
+    const dst = target(args[0]);
+    if (!dst) return `Ping request could not find host ${args[0] ?? ''}. Please check the name and try again.`;
+    const results = this.pc.pingAny(dst, count);
     this.pc.network?.run();
     return formatWindowsPing(dst, results);
   }
 
   private tracert(args: string[]): string {
-    const dst = args[0];
-    if (!dst || !isValidIp(dst)) return `Unable to resolve target system name ${dst ?? ''}.`;
-    const result = this.pc.traceroute(dst);
+    const dst = target(args[0]);
+    if (!dst) return `Unable to resolve target system name ${args[0] ?? ''}.`;
+    const result = this.pc.tracerouteAny(dst);
     this.pc.network?.run();
     return formatWindowsTracert(result);
   }
@@ -172,10 +210,19 @@ export class PcShell implements Shell {
   }
 }
 
+/** A valid IPv4 or IPv6 address, normalised, or undefined. */
+function target(arg: string | undefined): string | undefined {
+  if (!arg) return undefined;
+  if (arg.includes(':')) return isValidIpv6(arg) ? normaliseIpv6(arg) : undefined;
+  return isValidIp(arg) ? arg : undefined;
+}
+
 export function formatWindowsPing(dst: string, results: PingResult[]): string {
   const lines = ['', `Pinging ${dst} with 32 bytes of data:`, ''];
+  const v6 = dst.includes(':');
   for (const r of results) {
-    if (r.status === 'success') lines.push(`Reply from ${dst}: bytes=32 time${r.rttMs! < 1 ? '<1' : '='}${r.rttMs! < 1 ? '' : r.rttMs}ms TTL=${r.ttl}`);
+    // Windows leaves the bytes and TTL off IPv6 replies.
+    if (r.status === 'success') lines.push(`Reply from ${dst}: ${v6 ? '' : 'bytes=32 '}time${r.rttMs! < 1 ? '<1' : '='}${r.rttMs! < 1 ? '' : r.rttMs}ms${v6 ? '' : ` TTL=${r.ttl}`}`);
     else if (r.status === 'unreachable') lines.push(`Reply from ${r.from}: Destination host unreachable.`);
     else if (r.status === 'ttl-exceeded') lines.push(`Reply from ${r.from}: TTL expired in transit.`);
     else if (r.status === 'no-route') lines.push('PING: transmit failed. General failure.');

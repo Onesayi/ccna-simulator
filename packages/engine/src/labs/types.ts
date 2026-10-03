@@ -27,6 +27,10 @@ export interface LabDeviceSpec {
   ip?: string;
   /** PCs only. */
   gateway?: string;
+  /** PCs only: "2001:db8:1::10/64", or "auto" for SLAAC. */
+  ipv6?: string;
+  /** PCs only: the IPv6 default gateway. */
+  gateway6?: string;
   /** IOS commands run from privileged EXEC before the lab starts. */
   config?: string;
 }
@@ -79,6 +83,24 @@ export type Check =
   | { type: 'accessGroup'; device: string; interface: string; direction: 'in' | 'out'; acl?: string }
   /** A TCP connection to `port`: `open` when it connects, `blocked` when it does not. */
   | { type: 'connect'; from: string; to: string; port: number; expect: 'open' | 'blocked' }
+  /** A global IPv6 address: exact, or any address inside `network`; optionally built with EUI-64 or learned by SLAAC. */
+  | { type: 'ipv6Address'; device: string; interface: string; prefix: number; address?: string; network?: string; eui64?: boolean; slaac?: boolean }
+  | { type: 'ipv6LinkLocal'; device: string; interface: string; address: string }
+  | { type: 'ipv6Routing'; device: string }
+  /** A route in the IPv6 routing table, or with `absent`, no such route. */
+  | { type: 'ipv6Route'; device: string; network: string; prefix: number; code?: 'C' | 'L' | 'S'; nextHop?: string; absent?: boolean }
+  | { type: 'stpMode'; device: string; mode: 'pvst' | 'rapid-pvst' }
+  /** The device is the root bridge for the VLAN. */
+  | { type: 'stpRoot'; device: string; vlan: number }
+  | { type: 'stpPortRole'; device: string; interface: string; vlan: number; role: 'root' | 'designated' | 'alternate' }
+  | { type: 'portfast'; device: string; interface: string }
+  | { type: 'bpduGuard'; device: string; interface: string }
+  | { type: 'errDisabled'; device: string; interface: string; expect: boolean }
+  /** An EtherChannel with at least `bundled` member ports in it, optionally negotiated with `protocol`. */
+  | { type: 'etherchannel'; device: string; group: number; bundled: number; protocol?: 'lacp' | 'pagp' | 'on' }
+  | { type: 'portSecurity'; device: string; interface: string; maximum?: number; violation?: 'shutdown' | 'restrict' | 'protect'; sticky?: boolean }
+  /** At least `count` (default 1) secure addresses on the port, optionally of one type. */
+  | { type: 'secureMac'; device: string; interface: string; kind?: 'sticky' | 'static'; count?: number }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 

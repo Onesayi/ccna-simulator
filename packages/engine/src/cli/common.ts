@@ -13,6 +13,7 @@ export type Mode =
   | 'privileged'
   | 'config'
   | 'config-if'
+  | 'config-if-range'
   | 'config-subif'
   | 'config-vlan'
   | 'config-router'
@@ -25,6 +26,8 @@ export interface Session {
   readonly device: Device;
   mode: Mode;
   currentInterface?: Interface;
+  /** `interface range`: interface commands run once per port in the range. */
+  currentRange?: Interface[];
   currentVlan?: number;
   currentOspf?: OspfProcess;
   currentPool?: DhcpPool;
@@ -42,8 +45,10 @@ export interface Command {
   run: (s: Session, args: string[]) => string | void;
 }
 
-export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl'];
-export const IF_MODES: Mode[] = ['config-if', 'config-subif'];
+export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl'];
+export const IF_MODES: Mode[] = ['config-if', 'config-if-range', 'config-subif'];
+/** Switchport commands: one interface, or a range of them. */
+export const L2_IF_MODES: Mode[] = ['config-if', 'config-if-range'];
 export const EXEC: Mode[] = ['user', 'privileged'];
 
 export const INVALID = `Invalid input detected at '^' marker.`;
@@ -87,4 +92,13 @@ export function iface(s: Session): Interface {
 /** True when `word` is an abbreviation of `keyword` ("ov" for "overload"). */
 export function abbrev(word: string | undefined, keyword: string): boolean {
   return word !== undefined && word.length > 0 && keyword.startsWith(word.toLowerCase());
+}
+
+export function parseVlanList(list: string): Set<number> {
+  const out = new Set<number>();
+  for (const part of list.split(',')) {
+    const [a, b] = part.split('-').map((x) => vlanId(x));
+    for (let v = a!; v <= (b ?? a!); v++) out.add(v);
+  }
+  return out;
 }
