@@ -40,6 +40,13 @@ export interface Interface {
   description?: string;
 }
 
+/** Ethernet only comes up when both ends of the cable are enabled; a shut far end leaves us down/down. */
+export function peerUp(i: Interface): boolean {
+  const link = i.link;
+  if (!link) return false;
+  return (link.a === i ? link.b : link.a).adminUp;
+}
+
 export function shortName(name: string): string {
   return name
     .replace(/^GigabitEthernet/, 'Gi')
@@ -71,7 +78,7 @@ export abstract class Device {
   }
 
   protected addInterface(name: string, adminUp: boolean, kind: InterfaceKind = 'physical', isUp?: (i: Interface) => boolean): Interface {
-    const upRule = isUp ?? ((i: Interface) => i.adminUp && i.link !== undefined);
+    const upRule = isUp ?? ((i: Interface) => i.adminUp && peerUp(i));
     const iface: Interface = {
       name,
       kind,

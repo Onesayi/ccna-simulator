@@ -1,0 +1,104 @@
+import type { Device } from '../devices/device';
+
+/** The five domains of the CCNA 200-301 v2.0 blueprint. */
+export const DOMAINS = {
+  '1.0': 'Network Infrastructure and Connectivity',
+  '2.0': 'Switching and Network Access',
+  '3.0': 'IP Routing',
+  '4.0': 'Network Services and Security',
+  '5.0': 'AI, and Network Operations and Management',
+} as const;
+
+export type DomainId = keyof typeof DOMAINS;
+
+/**
+ * - `guided`: a step-by-step task list on a fresh topology.
+ * - `troubleshoot`: a pre-built network with faults to find and fix.
+ * - `challenge`: an outcome to reach with little guidance.
+ */
+export type LabKind = 'guided' | 'troubleshoot' | 'challenge';
+
+export interface LabDeviceSpec {
+  hostname: string;
+  kind: Device['kind'];
+  /** Canvas position. */
+  at: [number, number];
+  /** PCs only: "192.168.1.10/24". */
+  ip?: string;
+  /** PCs only. */
+  gateway?: string;
+  /** IOS commands run from privileged EXEC before the lab starts. */
+  config?: string;
+}
+
+export interface LabTopology {
+  devices: LabDeviceSpec[];
+  /** Cables as "PC1 Eth0", "SW1 Gi0/1" pairs, using the hostnames above. */
+  links: [string, string][];
+}
+
+/**
+ * A check the grader runs against engine state. `device`, `from` and `to` name devices by their
+ * hostname in the lab definition, so renaming a device with `hostname` does not break grading.
+ */
+export type Check =
+  | { type: 'hostname'; device: string; name: string }
+  | { type: 'interfaceUp'; device: string; interface: string }
+  /** An exact `address`, or any usable host address inside `network`. */
+  | { type: 'interfaceIp'; device: string; interface: string; prefix: number; address?: string; network?: string }
+  | { type: 'defaultGateway'; device: string; address: string }
+  | { type: 'vlan'; device: string; id: number; name?: string }
+  | { type: 'accessVlan'; device: string; interface: string; vlan: number }
+  /** `allowed` must match the allowed VLAN list exactly. */
+  | { type: 'trunk'; device: string; interface: string; nativeVlan?: number; allowed?: number[] }
+  | { type: 'subinterface'; device: string; interface: string; vlan: number; native?: boolean }
+  | { type: 'ipRouting'; device: string }
+  /** A route installed in the routing table. With `absent`, passes only when no such route is installed. */
+  | { type: 'route'; device: string; network: string; prefix: number; code?: 'C' | 'L' | 'S'; nextHop?: string; absent?: boolean }
+  /** A static route as configured (installed or not), for floating statics. */
+  | { type: 'staticRoute'; device: string; network: string; prefix: number; nextHop?: string; ad?: number }
+  | { type: 'ping'; from: string; to: string; expect: 'success' | 'fail' }
+  /** Every address in `via` answers a traceroute probe, in this order. */
+  | { type: 'traceroute'; from: string; to: string; via: string[] }
+  /** A multiple-choice question; `answer` is the index of the right option. */
+  | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
+
+export type CheckType = Check['type'];
+
+/** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute'];
+
+export interface Objective {
+  text: string;
+  check: Check;
+  hint?: string;
+}
+
+export interface AddressingRow {
+  device: string;
+  interface: string;
+  address: string;
+  gateway?: string;
+  note?: string;
+}
+
+export interface LabDefinition {
+  id: string;
+  title: string;
+  domain: DomainId;
+  /** Blueprint objectives covered, such as "2.1.b". */
+  blueprint: string[];
+  kind: LabKind;
+  difficulty: 1 | 2 | 3;
+  /** One line for the catalog. */
+  summary: string;
+  /** Paragraphs separated by blank lines; `code` spans and "- " bullets are rendered. */
+  briefing: string;
+  addressing?: AddressingRow[];
+  topology: LabTopology;
+  objectives: Objective[];
+  /** Commands per device (hostname as defined above), entered from user EXEC through the device's shell. */
+  solution: Record<string, string>;
+  /** Shown once the lab is complete: what to remember and what to try next. */
+  debrief?: string;
+}
