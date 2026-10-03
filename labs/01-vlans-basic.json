@@ -1,0 +1,24 @@
+{
+  "id": "vlans-basic",
+  "title": "Separate two departments with VLANs",
+  "blueprint": ["2.1", "2.2.a", "2.4"],
+  "briefing": "Sales (PC1) and Engineering (PC2) share SW1. Put PC1 in VLAN 10 named SALES and PC2 in VLAN 20 named ENG, then prove they can no longer ping each other.",
+  "topology": {
+    "devices": [
+      { "hostname": "SW1", "kind": "switch" },
+      { "hostname": "PC1", "kind": "pc", "ip": "192.168.10.11/24" },
+      { "hostname": "PC2", "kind": "pc", "ip": "192.168.10.12/24" }
+    ],
+    "links": [
+      ["PC1 Eth0", "SW1 Gi0/1"],
+      ["PC2 Eth0", "SW1 Gi0/2"]
+    ]
+  },
+  "objectives": [
+    { "text": "VLAN 10 exists and is named SALES", "check": { "type": "vlan", "device": "SW1", "id": 10, "name": "SALES" } },
+    { "text": "VLAN 20 exists and is named ENG", "check": { "type": "vlan", "device": "SW1", "id": 20, "name": "ENG" } },
+    { "text": "Gi0/1 is an access port in VLAN 10", "check": { "type": "accessVlan", "device": "SW1", "interface": "Gi0/1", "vlan": 10 } },
+    { "text": "Gi0/2 is an access port in VLAN 20", "check": { "type": "accessVlan", "device": "SW1", "interface": "Gi0/2", "vlan": 20 } },
+    { "text": "PC1 can no longer reach PC2", "check": { "type": "ping", "from": "PC1", "to": "192.168.10.12", "expect": "fail" } }
+  ]
+}

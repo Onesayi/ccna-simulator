@@ -1,0 +1,17 @@
+{
+  "name": "ccna-sim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser-based CCNA 200-301 network simulator and study tool",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @ccna-sim/web",
+    "build": "npm run build -w @ccna-sim/engine && npm run build -w @ccna-sim/web",
+    "test": "npm test -w @ccna-sim/engine",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=20" }
+}
