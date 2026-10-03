@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import { CliSession, type Device } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
@@ -11,7 +12,13 @@ export function DeviceTerminal({ device }: { device: Device }) {
     const { shellFor, touch } = useNetwork.getState();
     const shell = shellFor(device);
     const term = new Terminal({ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, cursorBlink: true, convertEol: true });
+    // Size the terminal to its panel so long IOS lines wrap instead of running off the edge.
+    const fit = new FitAddon();
+    term.loadAddon(fit);
     term.open(host.current!);
+    fit.fit();
+    const resize = new ResizeObserver(() => fit.fit());
+    resize.observe(host.current!);
     term.focus();
     const history: string[] = [];
     let cursor = 0;
@@ -64,6 +71,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
       }
     });
     return () => {
+      resize.disconnect();
       sub.dispose();
       term.dispose();
     };
