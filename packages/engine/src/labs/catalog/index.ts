@@ -4,6 +4,7 @@ import { fhrpLabs } from './fhrp';
 import { infrastructureLabs } from './infrastructure';
 import { ipv6Labs } from './ipv6';
 import { securityLabs } from './security';
+import { arpSecurityLabs } from './arp-security';
 import { stpLabs } from './stp';
 import { operationsLabs } from './operations';
 import { ospfLabs } from './ospf';
@@ -48,15 +49,19 @@ const ORDER = [
   'port-security-errdisable',
   'dhcp-snooping',
   'dhcp-snooping-troubleshoot',
+  'dynamic-arp-inspection',
+  'dai-arp-acl',
+  'ip-source-guard',
   'ssh-remote-access',
   'syslog-read',
   'ntp-clock',
+  'capture-the-fault',
   'fix-the-office',
   'capstone-two-sites',
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...operationsLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),

@@ -56,7 +56,7 @@ function handles(a: { x: number; y: number }, b: { x: number; y: number }): [str
 }
 
 export function TopologyCanvas() {
-  const { topology, positions, version, selectedId, select, connect, disconnect, removeDevice, move } = useNetwork();
+  const { topology, positions, version, selectedId, capture, select, connect, disconnect, removeDevice, move, openCapture } = useNetwork();
 
   const { nodes, edges } = useMemo(() => {
     const nodes: DeviceNode[] = [...topology.devices.values()].map((d) => ({
@@ -82,14 +82,14 @@ export function TopologyCanvas() {
         sourceHandle: sh,
         targetHandle: th,
         label: [`${shortName(l.a.name)} – ${shortName(l.b.name)}`, po, blocked && `STP blocks VLAN ${vlans.join(', ')}`, errDisabled && 'err-disabled'].filter(Boolean).join(' · '),
-        className: !up ? 'link-down' : blocked ? 'link-blocked' : po ? 'link-up link-bundled' : 'link-up',
+        className: [!up ? 'link-down' : blocked ? 'link-blocked' : po ? 'link-up link-bundled' : 'link-up', capture.open && capture.link === l.id && 'link-captured'].filter(Boolean).join(' '),
         data: { up, blocked },
       };
     });
     return { nodes, edges };
     // `version` is the signal that engine state changed underneath the same topology object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topology, positions, version, selectedId]);
+  }, [topology, positions, version, selectedId, capture]);
 
   return (
     <ReactFlow
@@ -107,9 +107,8 @@ export function TopologyCanvas() {
       }}
       onConnect={(c) => connect(c.source, c.target)}
       onNodesDelete={(ns) => ns.forEach((n) => removeDevice(n.id))}
-      onEdgeClick={(_, e) => {
-        if (window.confirm(`Remove the cable ${String(e.label)}?`)) disconnect(e.id);
-      }}
+      onEdgeClick={(_, e) => openCapture(e.id)}
+      onEdgesDelete={(es) => es.forEach((e) => disconnect(e.id))}
       deleteKeyCode="Delete"
       fitView
       fitViewOptions={{ padding: 0.25 }}

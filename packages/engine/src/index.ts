@@ -32,3 +32,7 @@ export * from './routing/hsrp';
 export * from './services/discovery';
 export * from './services/management';
 export * from './services/ntp';
+export * from './capture/dissect';
+export * from './capture/filter';
+export * from './switching/arp-inspection';
+export * from './switching/source-guard';

@@ -107,6 +107,10 @@ interface NetworkState {
   /** Bumped only when the network itself may have changed (commands, cabling), not when a node is dragged. */
   configVersion: number;
   error?: string;
+  /** The packet capture panel: open or not, and the cable it shows (all cables when unset). */
+  capture: { open: boolean; link?: string };
+  openCapture: (link?: string) => void;
+  closeCapture: () => void;
   select: (id: string | undefined) => void;
   shellFor: (device: Device) => Shell;
   /** Call after running a command: the engine may have changed. Pass `false` for cosmetic changes. */
@@ -127,6 +131,9 @@ export const useNetwork = create<NetworkState>((set, get) => ({
   shells: new Map(),
   version: 0,
   configVersion: 0,
+  capture: { open: false },
+  openCapture: (link) => set({ capture: { open: true, link } }),
+  closeCapture: () => set((s) => ({ capture: { ...s.capture, open: false } })),
   select: (id) => set({ selectedId: id }),
   shellFor: (device) => {
     const { shells } = get();
@@ -136,7 +143,16 @@ export const useNetwork = create<NetworkState>((set, get) => ({
   },
   touch: (config = true) => set((s) => ({ version: s.version + 1, configVersion: s.configVersion + (config ? 1 : 0) })),
   load: (topology, positions) =>
-    set((s) => ({ topology, positions, shells: new Map(), selectedId: undefined, error: undefined, version: s.version + 1, configVersion: s.configVersion + 1 })),
+    set((s) => ({
+      topology,
+      positions,
+      shells: new Map(),
+      selectedId: undefined,
+      error: undefined,
+      capture: { open: s.capture.open },
+      version: s.version + 1,
+      configVersion: s.configVersion + 1,
+    })),
   addDevice: (kind, at) => {
     const { topology, positions } = get();
     const hostname = nextHostname(topology, kind);
@@ -172,7 +188,7 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     const link = topology.links.find((l) => l.id === linkId);
     if (link) topology.disconnect(link);
     topology.converge();
-    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1 }));
+    set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, capture: s.capture.link === linkId ? { open: s.capture.open } : s.capture }));
   },
   move: (id, at) => {
     get().positions.set(id, at);

@@ -15,7 +15,8 @@ body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); col
 header { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
 header h1 { font-size: 18px; margin: 0; }
 .hint, .empty { color: var(--muted); font-size: 14px; }
-.canvas { min-height: 0; }
+.canvas { min-height: 0; display: flex; flex-direction: column; }
+.canvas .flow { flex: 1; min-height: 160px; }
 .console { border-left: 1px solid var(--border); background: #0b0f14; padding: 8px; min-height: 0; }
 .console .empty { padding: 12px; }
 .terminal { height: 100%; }
@@ -131,3 +132,33 @@ button.primary:hover { background: #1d4ed8; }
 .complete p { margin: 6px 0 10px; }
 .solution pre { background: #0b0f14; color: #c9d1d9; padding: 10px; border-radius: 6px; font-size: 12px; overflow: auto; margin: 4px 0 12px; }
 .solution-device { font-weight: 600; font-size: 13px; }
+
+/* ---------------------------------------------------------------- packet capture */
+header button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+.react-flow__edge.link-captured .react-flow__edge-path { stroke: #2563eb; stroke-width: 4; }
+.capture { height: 42%; min-height: 220px; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--panel); font-size: 12px; }
+.capture-bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.capture-bar select, .capture-bar input.filter { font: inherit; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.capture-bar input.filter { flex: 1; min-width: 200px; font-family: ui-monospace, Menlo, monospace; }
+.capture-bar input.filter.invalid { border-color: #d1453b; background: #d1453b14; }
+.capture-bar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.capture-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 340px; }
+.capture-list { overflow: auto; min-height: 0; }
+.capture-list table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.capture-list th { position: sticky; top: 0; background: var(--panel); text-align: left; font-family: system-ui, sans-serif; font-weight: 500; color: var(--muted); padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.capture-list td { padding: 2px 6px; white-space: nowrap; color: #1c2430; }
+.capture-list tr { cursor: pointer; }
+.capture-list tr.selected td { background: #2563eb !important; color: #fff; }
+.capture-empty { padding: 8px 10px; }
+.proto-arp td { background: #faf0d7; }
+.proto-icmp td, .proto-icmpv6 td { background: #fce0ff; }
+.proto-tcp td { background: #e7e6ff; }
+.proto-udp td, .proto-dhcp td, .proto-ntp td { background: #daeeff; }
+.proto-ospf td, .proto-hsrp td { background: #fff3d6; }
+.proto-stp td, .proto-cdp td, .proto-lldp td, .proto-lacp td, .proto-pagp td { background: #eef0f2; }
+.capture-detail { border-left: 1px solid var(--border); overflow: auto; padding: 6px 10px; }
+.capture-detail summary { cursor: pointer; font-weight: 600; margin: 4px 0; }
+.capture-detail dl { margin: 0 0 6px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.capture-detail dt { display: inline; color: var(--muted); }
+.capture-detail dd { display: inline; margin: 0; }
+@media (max-width: 1000px) { .capture-body { grid-template-columns: 1fr; } .capture-detail { border-left: 0; border-top: 1px solid var(--border); max-height: 140px; } }

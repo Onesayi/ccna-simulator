@@ -7,6 +7,7 @@ import { formatAclEntry } from '../services/acl';
 import { Switch } from '../devices/switch';
 import { IosDevice } from '../devices/ios-device';
 import { ipv6InterfaceConfig, ipv6RouteConfig } from './commands-ipv6';
+import { daiInterfaceConfig } from '../switching/arp-inspection';
 
 /** Formatters for IOS show commands and ping/traceroute output. Pure functions of engine state. */
 
@@ -194,6 +195,15 @@ export function runningConfig(d: Device & IpDevice): string {
     if (d.snooping.enabled) out.push('ip dhcp snooping');
     out.push('!');
   }
+  if (d instanceof Switch) {
+    const l2 = [
+      ...d.staticBindings.map((b) => `ip source binding ${b.mac} vlan ${b.vlan} ${b.ip} interface ${shortName(b.port.name)}`),
+      ...d.dai.runningConfig(),
+      ...[...d.errRecovery.causes].map((c) => `errdisable recovery cause ${c}`),
+      ...(d.errRecovery.interval !== 300 ? [`errdisable recovery interval ${d.errRecovery.interval}`] : []),
+    ];
+    if (l2.length) out.push(...l2, '!');
+  }
   if (d instanceof Router && d.ipv6Routing) out.push('ipv6 unicast-routing', '!');
   if (d instanceof Switch) {
     const stp = d.stp;
@@ -256,6 +266,8 @@ export function runningConfig(d: Device & IpDevice): string {
       if (st?.priority !== undefined) out.push(` spanning-tree port-priority ${st.priority}`);
       if (i.dhcpSnooping?.rateLimit) out.push(` ip dhcp snooping limit rate ${i.dhcpSnooping.rateLimit}`);
       if (i.dhcpSnooping?.trust) out.push(' ip dhcp snooping trust');
+      out.push(...daiInterfaceConfig(i));
+      if (i.sourceGuard) out.push(` ip verify source${i.sourceGuard === 'ip-mac' ? ' port-security' : ''}`);
     } else {
       out.push(i.dhcpClient ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
       out.push(...ipv6InterfaceConfig(i));

@@ -20,7 +20,8 @@ const PC_HELP = `Available commands:
   arp -d                                 Clear the ARP cache
   telnet <ip> [port]                     Open a telnet session (or a TCP connection to a port)
   ssh -l <user> <ip>                     Open an SSH session
-  curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)`;
+  curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)
+  arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)`;
 
 /** A Windows-flavoured command prompt for PCs, close to Packet Tracer's. */
 export class PcShell implements Shell {
@@ -71,6 +72,8 @@ export class PcShell implements Shell {
         return this.ssh(args);
       case 'curl':
         return this.curl(args);
+      case 'arpspoof':
+        return this.arpspoof(args);
       default:
         return `Invalid Command.`;
     }
@@ -222,6 +225,23 @@ export class PcShell implements Shell {
     if (r.status === 'refused') return `curl: (7) Failed to connect to ${host} port ${port}: Connection refused`;
     if (r.status === 'unreachable' || r.status === 'no-route') return `curl: (7) Failed to connect to ${host} port ${port}: No route to host`;
     return `curl: (28) Failed to connect to ${host} port ${port}: Timed out`;
+  }
+
+  private arpspoof(args: string[]): string {
+    let count = 1;
+    const n = args.findIndex((a) => a.toLowerCase() === '-n');
+    if (n >= 0) {
+      count = Number(args[n + 1]);
+      args = args.filter((_, i) => i !== n && i !== n + 1);
+      if (!Number.isInteger(count) || count < 1 || count > 500) return 'Bad value for option -n.';
+    }
+    const ip = args[0];
+    if (!ip || !isValidIp(ip)) return 'Usage: arpspoof <ip> [-n count]';
+    if (!this.pc.nic.isUp) return 'Ethernet0 is not connected.';
+    this.pc.gratuitousArp(ip, count);
+    this.pc.network?.run();
+    const mac = this.pc.nic.mac;
+    return `Sent ${count} gratuitous ARP ${count === 1 ? 'reply' : 'replies'}: ${ip} is-at ${mac}`;
   }
 
   private arp(args: string[]): string {

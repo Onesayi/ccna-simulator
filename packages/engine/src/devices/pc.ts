@@ -132,6 +132,20 @@ export class Pc extends IpDevice {
     this.apipa = true;
   }
 
+  /**
+   * A lab attack tool: broadcasts gratuitous ARP replies claiming `ip` with this PC's MAC, which
+   * overwrites the entry in every neighbour that already knows `ip` (ARP poisoning). Packets go
+   * out `intervalMs` apart, so a large `count` is also an ARP flood.
+   */
+  gratuitousArp(ip: Ipv4Address, count = 1, intervalMs = 10): void {
+    ipToInt(ip);
+    for (let k = 0; k < count; k++) {
+      this.schedule(k * intervalMs, `gratuitous ARP ${ip}`, () =>
+        this.transmitL3(this.nic, BROADCAST_MAC, { kind: 'arp', op: 'reply', senderMac: this.nic.mac, senderIp: ip, targetMac: BROADCAST_MAC, targetIp: ip }),
+      );
+    }
+  }
+
   private broadcast(p: UdpPacket): void {
     this.transmitL3(this.nic, BROADCAST_MAC, p);
   }

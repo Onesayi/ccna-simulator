@@ -1,5 +1,6 @@
 import { peerUp, shortName, type Interface, type PortSecurityConfig } from '../devices/device';
-import type { Switch } from '../devices/switch';
+import { ERR_RECOVERY_CAUSES, type Switch } from '../devices/switch';
+import { showBindings } from '../switching/source-guard';
 import { formatVlanList } from './show';
 
 /** `show interfaces status`: one line per switchport, with err-disabled ports called out. */
@@ -118,14 +119,23 @@ export function showDhcpSnooping(sw: Switch): string {
 }
 
 export function showDhcpSnoopingBinding(sw: Switch): string {
-  const rows = sw.snooping.bindings.map((b) => {
-    const mac = b.mac.replace(/\./g, '').replace(/(..)(?=.)/g, '$1:').toUpperCase();
-    return `${mac.padEnd(20)}${b.ip.padEnd(17)}${String(b.leaseSeconds).padEnd(12)}${'dhcp-snooping'.padEnd(15)}${String(b.vlan).padEnd(6)}${b.port.name}`;
-  });
+  return showBindings(sw.sourceBindings().filter((b) => b.type === 'dhcp-snooping'));
+}
+
+/** `show errdisable recovery`: which causes recover on a timer, and the ports waiting on it. */
+export function showErrdisableRecovery(sw: Switch): string {
+  const { causes, interval } = sw.errRecovery;
   return [
-    'MacAddress          IpAddress        Lease(sec)  Type           VLAN  Interface',
-    '------------------  ---------------  ----------  -------------  ----  --------------------',
-    ...rows,
-    `Total number of bindings: ${rows.length}`,
+    'ErrDisable Reason            Timer Status',
+    '-----------------            --------------',
+    ...ERR_RECOVERY_CAUSES.map((c) => `${c.padEnd(29)}${causes.has(c) ? 'Enabled' : 'Disabled'}`),
+    '',
+    `Timer interval: ${interval} seconds`,
+    '',
+    'Interfaces that will be enabled at the next timeout:',
+    '',
+    'Interface       Errdisable reason       Time left(sec)',
+    '---------       -----------------       --------------',
+    ...sw.recoveryTimers().map((t) => `${shortName(t.port.name).padEnd(16)}${t.reason.padEnd(24)}${String(t.secondsLeft).padStart(14)}`),
   ].join('\n');
 }

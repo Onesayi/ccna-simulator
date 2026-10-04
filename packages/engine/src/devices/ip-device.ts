@@ -548,6 +548,11 @@ export abstract class IpDevice extends Device {
   private handleArp(iface: Interface, p: ArpPacket): void {
     const ip = iface.ip;
     if (!ip) return;
+    if (p.senderIp === ip.address && p.senderMac !== iface.mac) {
+      // Someone else claims our address: a misconfigured host, or ARP poisoning.
+      this.log.push(`%IP-4-DUPADDR: Duplicate address ${ip.address} on ${iface.name}, sourced by ${p.senderMac}`);
+      return;
+    }
     const virtual = this.virtualMacFor(iface, p.targetIp);
     const forMe = p.targetIp === ip.address || virtual !== undefined;
     // RFC 826: always refresh an existing entry; only create one when we are the target.

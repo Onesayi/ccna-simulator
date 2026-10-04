@@ -4,6 +4,7 @@ import { TopologyCanvas } from './components/TopologyCanvas';
 import { DeviceTerminal } from './components/DeviceTerminal';
 import { LabCatalog } from './components/LabCatalog';
 import { LabPanel } from './components/LabPanel';
+import { CapturePanel } from './components/CapturePanel';
 import { useNetwork } from './state/network';
 import { useStudy } from './state/study';
 
@@ -22,7 +23,7 @@ function go(hash: string) {
 
 export function App() {
   // Subscribing to `version` re-renders the header and console bar after CLI changes (hostname etc).
-  const { topology, selectedId, error, addDevice, removeDevice, loadDemo, clear } = useNetwork();
+  const { topology, selectedId, error, capture, addDevice, removeDevice, loadDemo, clear, openCapture, closeCapture } = useNetwork();
   useNetwork((s) => s.version);
   const { run, start, exit } = useStudy();
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
@@ -70,11 +71,16 @@ export function App() {
           </div>
         )}
         {route.view !== 'catalog' && (
+          <button className={capture.open ? 'active' : ''} aria-pressed={capture.open} onClick={() => (capture.open ? closeCapture() : openCapture(capture.link))}>
+            Capture
+          </button>
+        )}
+        {route.view !== 'catalog' && (
           <span className="hint">
             {error ??
               (inLab
-                ? 'Click a device to open its console. Objectives update as you type.'
-                : 'Drag between devices to cable them. Click a device to open its console. Click a cable to remove it.')}
+                ? 'Click a device to open its console, or a cable to capture its traffic. Objectives update as you type.'
+                : 'Drag between devices to cable them. Click a device to open its console, or a cable to capture its traffic.')}
           </span>
         )}
       </header>
@@ -91,7 +97,10 @@ export function App() {
             </aside>
           )}
           <main className="canvas">
-            <TopologyCanvas key={inLab ? run.lab.id : 'sandbox'} />
+            <div className="flow">
+              <TopologyCanvas key={inLab ? run.lab.id : 'sandbox'} />
+            </div>
+            {capture.open && <CapturePanel canEdit={!inLab} />}
           </main>
           <aside className="console">
             {selected ? (

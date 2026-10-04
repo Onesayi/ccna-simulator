@@ -39,3 +39,21 @@ test('adds and deletes a device', async ({ page }) => {
   await page.getByRole('button', { name: 'Delete device' }).click();
   await expect(page.locator('.device-node')).toHaveCount(7);
 });
+
+test('captures packets crossing a cable', async ({ page }) => {
+  await page.getByRole('button', { name: 'Capture' }).click();
+  // PC1 pings across the network; its frames show up in the capture list.
+  await openDevice(page, 'PC1');
+  await typeLines(page, 'ping 192.168.30.10');
+  const capture = page.locator('.capture');
+  await expect(capture).toBeVisible();
+  await expect(capture.locator('.capture-list tbody tr')).not.toHaveCount(0);
+  // Filter down to ICMP and open a frame's detail.
+  await capture.getByPlaceholder(/Filter/).fill('icmp');
+  await expect(capture.locator('.capture-list tbody tr.proto-icmp').first()).toBeVisible();
+  await capture.locator('.capture-list tbody tr').first().click();
+  await expect(capture.locator('.capture-detail')).toContainText('Internet Protocol Version 4');
+  // An invalid filter is flagged, not applied.
+  await capture.getByPlaceholder(/Filter/).fill('nonsense ==');
+  await expect(capture.locator('input.filter.invalid')).toBeVisible();
+});

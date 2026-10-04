@@ -1,5 +1,7 @@
 import { BROADCAST_MAC, type MacAddress } from '../core/addressing';
-import { SLOW_PROTOCOLS_MAC, STP_MAC, type BpduPacket, type ChannelPdu, type Frame, type Packet, type UdpPacket } from '../core/frames';
+import { SLOW_PROTOCOLS_MAC, STP_MAC, type BpduPacket, type ChannelPdu, type Frame, type IpPacket, type Packet, type UdpPacket } from '../core/frames';
+import { ArpInspection } from '../switching/arp-inspection';
+import { sourceGuardAllows, type SourceBinding } from '../switching/source-guard';
 import { channelProtocol, copyL2, negotiates, sameL2, type ChannelView, type MemberFlag } from '../switching/etherchannel';
 import { SpanningTree } from '../switching/stp';
 import { normaliseIfName, shortName, type ErrDisableReason, type Interface } from './device';
@@ -31,6 +33,16 @@ export interface DhcpSnooping {
   bindings: DhcpSnoopingBinding[];
 }
 
+/** `errdisable recovery cause ...` and `errdisable recovery interval ...`. */
+export interface ErrRecovery {
+  causes: Set<string>;
+  /** Seconds before an err-disabled port is brought back (default 300). */
+  interval: number;
+}
+
+/** Causes `errdisable recovery cause` accepts, in the order `show errdisable recovery` lists them. */
+export const ERR_RECOVERY_CAUSES = ['arp-inspection', 'bpduguard', 'channel-misconfig', 'dhcp-rate-limit', 'link-flap', 'psecure-violation'];
+
 /** MAC address table aging time, matching the Catalyst default of 300 seconds. */
 export const MAC_AGING_MS = 300_000;
 
@@ -38,13 +50,19 @@ export const MAC_AGING_MS = 300_000;
  * A Catalyst-style switch: VLAN-aware MAC learning, flooding and 802.1Q trunking, plus
  * SVIs (`interface vlan 10`) for management, and inter-VLAN routing once `ip routing` is on.
  * Runs per-VLAN spanning tree, bundles ports into EtherChannels (LACP, PAgP or static) and
- * enforces port security on access ports and DHCP snooping.
+ * enforces port security, DHCP snooping, Dynamic ARP Inspection and IP Source Guard.
  */
 export class Switch extends IosDevice {
   readonly kind = 'switch' as const;
   readonly platform = 'cisco WS-C2960-24TT-L';
   readonly software = 'Cisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)';
   readonly snooping: DhcpSnooping = { enabled: false, vlans: new Set(), option82: true, bindings: [] };
+  /** `ip source binding ...`: static entries for IP Source Guard. */
+  readonly staticBindings: SourceBinding[] = [];
+  readonly dai: ArpInspection;
+  readonly errRecovery: ErrRecovery = { causes: new Set(), interval: 300 };
+  /** When each port was err-disabled, for the recovery timer. */
+  private readonly errDisabledAt = new Map<Interface, number>();
   /** Snooping drops already logged, so retransmits do not flood the console. */
   private readonly snoopWarnings = new Set<string>();
   readonly vlans = new Map<number, string>([[1, 'default']]);
@@ -64,6 +82,13 @@ export class Switch extends IosDevice {
     for (let i = 1; i <= portCount; i++) this.addInterface(`GigabitEthernet0/${i}`, true);
     this.configureInterface('Vlan1'); // every Catalyst ships with a (shut down) management SVI
     const sw = this;
+    this.dai = new ArpInspection({
+      now: () => this.now,
+      log: this.log,
+      bindings: () => this.snooping.bindings,
+      errDisable: (port, reason) => this.errDisable(port, reason),
+      vlanExists: (vlan) => this.vlans.has(vlan),
+    });
     this.stp = new SpanningTree({
       get bridgeMac() {
         return sw.bridgeMac;
@@ -222,6 +247,9 @@ export class Switch extends IosDevice {
     if (vlan === undefined) return; // dropped: VLAN not allowed on this port
     if (!this.stp.forwarding(ingress, vlan)) return; // a discarding port neither learns nor forwards
 
+    if (p.kind === 'arp' && this.dai.enabled(vlan) && !(ingress.arpInspection?.trust ?? on.arpInspection?.trust) && !this.dai.inspect(on, vlan, frame, p)) return;
+    if (isIpv4(p) && !sourceGuardAllows(this, ingress, vlan, frame, p)) return;
+
     let out: Frame | undefined = frame;
     if (p.kind === 'udp' && p.dhcp && this.snoopingOn(vlan)) out = this.snoop(on, ingress, vlan, frame, p);
     if (!out) return;
@@ -233,6 +261,11 @@ export class Switch extends IosDevice {
 
   snoopingOn(vlan: number): boolean {
     return this.snooping.enabled && this.snooping.vlans.has(vlan);
+  }
+
+  /** Snooping leases and static bindings, as `show ip source binding` lists them. */
+  sourceBindings(): SourceBinding[] {
+    return [...this.snooping.bindings.map((b) => ({ ...b, type: 'dhcp-snooping' as const })), ...this.staticBindings];
   }
 
   /** Trusted ports pass everything; untrusted ports pass client messages only, and get option 82 added. */
@@ -304,6 +337,7 @@ export class Switch extends IosDevice {
   errDisable(port: Interface, reason: ErrDisableReason): void {
     if (port.errDisabled) return;
     port.errDisabled = reason;
+    this.errDisabledAt.set(port, this.now);
     const short = shortName(port.name);
     this.log.push(
       `%PM-4-ERR_DISABLE: ${reason} error detected on ${short}, putting ${short} in err-disable state`,
@@ -419,6 +453,32 @@ export class Switch extends IosDevice {
     changed = this.settleChannels() || changed;
     changed = this.stp.settle() || changed;
     for (const p of this.ports) if (!p.isUp) this.clearDynamicSecure(p);
+    return this.recoverErrDisabled() || changed;
+  }
+
+  /** Seconds until each err-disabled port with recovery enabled comes back, for `show errdisable recovery`. */
+  recoveryTimers(): { port: Interface; reason: ErrDisableReason; secondsLeft: number }[] {
+    return this.ports
+      .filter((p) => p.errDisabled && this.errRecovery.causes.has(p.errDisabled))
+      .map((p) => {
+        const elapsed = (this.now - (this.errDisabledAt.get(p) ?? this.now)) / 1000;
+        return { port: p, reason: p.errDisabled!, secondsLeft: Math.max(0, Math.ceil(this.errRecovery.interval - elapsed)) };
+      });
+  }
+
+  /**
+   * `errdisable recovery`: brings a port back once its timer runs out. The virtual clock only
+   * moves while traffic is in flight, so in practice this fires after long-running activity.
+   */
+  private recoverErrDisabled(): boolean {
+    let changed = false;
+    for (const { port, reason, secondsLeft } of this.recoveryTimers()) {
+      if (secondsLeft > 0) continue;
+      port.errDisabled = undefined;
+      this.errDisabledAt.delete(port);
+      this.log.push(`%PM-4-ERR_RECOVER: Attempting to recover from ${reason} err-disable state on ${shortName(port.name)}`);
+      changed = true;
+    }
     return changed;
   }
 
@@ -454,4 +514,8 @@ export class Switch extends IosDevice {
     }
     return changed;
   }
+}
+
+function isIpv4(p: Packet): p is IpPacket {
+  return p.kind === 'icmp' || p.kind === 'tcp' || p.kind === 'udp' || p.kind === 'ospf';
 }
