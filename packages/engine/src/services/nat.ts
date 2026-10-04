@@ -73,7 +73,7 @@ export class Nat {
 
   /** Inside-to-outside: rewrites the source. `undefined` means drop (no address left in the pool). */
   outbound(p: IpPacket): IpPacket | undefined {
-    if (p.kind === 'ospf') return p;
+    if (p.kind === 'ospf' || p.kind === 'vrrp') return p;
     const proto = p.kind;
     const localPort = portOf(p, 'src');
     const existing = this.entries.find((e) => e.proto === proto && e.insideLocal === p.src && e.localPort === localPort && e.outside === p.dst);
@@ -112,7 +112,7 @@ export class Nat {
       if (!e) return p;
       return this.hit({ ...p, dst: e.insideLocal, original: withPort({ ...o, src: e.insideLocal }, 'src', e.localPort) });
     }
-    if (p.kind === 'ospf') return p;
+    if (p.kind === 'ospf' || p.kind === 'vrrp') return p;
     const port = portOf(p, 'dst');
     const e = this.find(p.kind, p.dst, port);
     if (e) return this.hit(withPort({ ...p, dst: e.insideLocal }, 'dst', e.localPort));

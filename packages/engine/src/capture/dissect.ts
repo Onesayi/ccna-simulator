@@ -1,5 +1,6 @@
 import { BROADCAST_MAC } from '../core/addressing';
-import type { Frame, IpPacket, Packet, UdpPacket } from '../core/frames';
+import type { Frame, IpPacket, Packet, TcpPacket, UdpPacket } from '../core/frames';
+import { dscpName } from '../services/dscp';
 
 /** One row of the capture list, Wireshark style. */
 export interface FrameSummary {
@@ -23,11 +24,13 @@ export function protocolOf(p: Packet): string {
     case 'icmp':
       return 'ICMP';
     case 'tcp':
-      return p.tacacs ? 'TACACS+' : 'TCP';
+      return p.tacacs ? 'TACACS+' : p.transfer ? (p.transfer.protocol === 'ftp' ? 'FTP' : 'SSHv2') : 'TCP';
     case 'udp':
-      return p.dhcp ? 'DHCP' : p.hsrp ? 'HSRP' : p.ntp ? 'NTP' : p.radius ? 'RADIUS' : p.snmp ? 'SNMP' : p.capwap ? (p.capwap.type === 'data' ? 'CAPWAP-Data' : 'CAPWAP') : 'UDP';
+      return p.dhcp ? 'DHCP' : p.hsrp ? 'HSRP' : p.glbp ? 'GLBP' : p.tftp ? 'TFTP' : p.ntp ? 'NTP' : p.radius ? 'RADIUS' : p.snmp ? 'SNMP' : p.capwap ? (p.capwap.type === 'data' ? 'CAPWAP-Data' : 'CAPWAP') : 'UDP';
     case 'ospf':
       return 'OSPF';
+    case 'vrrp':
+      return 'VRRP';
     case 'icmpv6':
       return 'ICMPv6';
     case 'bpdu':
@@ -95,7 +98,23 @@ const ICMPV6_NAMES: Record<string, string> = {
 };
 
 function isIp(p: Packet): p is IpPacket {
-  return p.kind === 'icmp' || p.kind === 'tcp' || p.kind === 'udp' || p.kind === 'ospf';
+  return p.kind === 'icmp' || p.kind === 'tcp' || p.kind === 'udp' || p.kind === 'ospf' || p.kind === 'vrrp';
+}
+
+/** FTP sends its login and commands in clear text; SCP and SFTP ride inside SSH, so nothing shows. */
+function transferInfo(p: TcpPacket): string {
+  const t = p.transfer!;
+  if (t.protocol !== 'ftp') return `${p.dstPort === 22 ? 'Client' : 'Server'}: Encrypted packet (${t.protocol.toUpperCase()} over SSH)`;
+  if (t.op === 'reply') return t.status === 'ok' ? 'Response: 226 Transfer complete' : t.status === 'login-failed' ? 'Response: 530 Login incorrect.' : 'Response: 550 Failed to open file.';
+  return `Request: USER ${t.username ?? 'anonymous'} | PASS ${t.password ?? ''} | ${t.op === 'put' ? 'STOR' : 'RETR'} ${t.file}`;
+}
+
+function tftpInfo(t: NonNullable<UdpPacket['tftp']>): string {
+  if (t.op === 'rrq') return `Read Request, File: ${t.file}, Transfer type: octet`;
+  if (t.op === 'wrq') return `Write Request, File: ${t.file}, Transfer type: octet`;
+  if (t.op === 'data') return 'Data Packet, Block: 1 (last)';
+  if (t.op === 'ack') return 'Acknowledgement, Block: 1';
+  return `Error Code, Message: ${t.error}`;
 }
 
 function info(p: Packet): string {
@@ -106,6 +125,7 @@ function info(p: Packet): string {
     case 'icmp':
       return `${ICMP_NAMES[p.type]}  id=${p.id}, seq=${p.seq}, ttl=${p.ttl}`;
     case 'tcp':
+      if (p.transfer) return transferInfo(p);
       if (p.tacacs) return `TACACS+ ${p.tacacs.type === 'authen' ? 'Authentication' : p.tacacs.type === 'author' ? 'Authorization' : 'Accounting'} ${p.dstPort === 49 ? 'Request' : 'Reply'} (body encrypted)`;
       return `${p.srcPort} → ${p.dstPort} [${p.flags === 'syn' ? 'SYN' : p.flags === 'syn-ack' ? 'SYN, ACK' : p.flags === 'psh' ? 'PSH, ACK' : 'RST'}]`;
     case 'udp': {
@@ -117,12 +137,16 @@ function info(p: Packet): string {
         return `CAPWAP-Control - ${c.type.split('-').map(capitalised).join(' ')}${c.apName ? ` (${c.apName})` : ''}`;
       }
       if (p.dhcp) return `DHCP ${p.dhcp.op[0]!.toUpperCase()}${p.dhcp.op.slice(1)}  - Transaction ID 0x${p.dhcp.xid.toString(16)}`;
+      if (p.tftp) return tftpInfo(p.tftp);
+      if (p.glbp) return `Hello, group ${p.glbp.group}, priority ${p.glbp.priority}${p.glbp.forwarders ? `, ${p.glbp.forwarders.length} forwarders` : ''}`;
       if (p.hsrp) return `Hello (state ${p.hsrp.state[0]!.toUpperCase()}${p.hsrp.state.slice(1)}), group ${p.hsrp.group}, priority ${p.hsrp.priority}`;
       if (p.ntp) return `NTP Version 4, ${p.ntp.mode}`;
       return `${p.srcPort} → ${p.dstPort}`;
     }
     case 'ospf':
       return p.ospf.type === 'hello' ? 'Hello Packet' : p.ospf.type === 'dbd' ? 'DB Description' : 'LS Update';
+    case 'vrrp':
+      return `Announcement (v2), VRID ${p.vrrp.group}, Prio ${p.vrrp.priority}, Addr ${p.vrrp.vip}`;
     case 'icmpv6':
       return p.target ? `${ICMPV6_NAMES[p.type]} for ${p.target}` : `${ICMPV6_NAMES[p.type]}`;
     case 'bpdu':
@@ -230,8 +254,10 @@ export function dissect(frame: Frame): Layer[] {
       });
       break;
     default: {
-      const proto = p.kind === 'icmp' ? 'ICMP (1)' : p.kind === 'tcp' ? 'TCP (6)' : p.kind === 'udp' ? 'UDP (17)' : 'OSPF (89)';
-      layers.push({ title: `Internet Protocol Version 4, Src: ${p.src}, Dst: ${p.dst}`, fields: [['Time to Live', String(p.ttl)], ['Protocol', proto], ['Source Address', p.src], ['Destination Address', p.dst]] });
+      const proto = p.kind === 'icmp' ? 'ICMP (1)' : p.kind === 'tcp' ? 'TCP (6)' : p.kind === 'udp' ? 'UDP (17)' : p.kind === 'vrrp' ? 'VRRP (112)' : 'OSPF (89)';
+      const dscp = p.dscp ?? 0;
+      const ds = `0x${(dscp << 2).toString(16).padStart(2, '0')} (DSCP: ${dscp ? dscpName(dscp).toUpperCase() : 'CS0'}, ECN: Not-ECT)`;
+      layers.push({ title: `Internet Protocol Version 4, Src: ${p.src}, Dst: ${p.dst}`, fields: [['Differentiated Services Field', ds], ['Time to Live', String(p.ttl)], ['Protocol', proto], ['Source Address', p.src], ['Destination Address', p.dst]] });
       layers.push(...transport(p));
     }
   }
@@ -244,6 +270,8 @@ function transport(p: IpPacket): Layer[] {
       return [{ title: 'Internet Control Message Protocol', fields: [['Type', ICMP_NAMES[p.type]!], ['Identifier', String(p.id)], ['Sequence Number', String(p.seq)]] }];
     case 'tcp': {
       const layers: Layer[] = [{ title: `Transmission Control Protocol, Src Port: ${p.srcPort}, Dst Port: ${p.dstPort}`, fields: [['Source Port', String(p.srcPort)], ['Destination Port', String(p.dstPort)], ['Flags', p.flags.toUpperCase()]] }];
+      if (p.transfer?.protocol === 'ftp') layers.push({ title: 'File Transfer Protocol (FTP)', fields: [['Request/Response', transferInfo(p)], ...(p.transfer.data !== undefined ? [['Data', `${p.transfer.data.length} bytes (clear text)`] as [string, string]] : [])] });
+      else if (p.transfer) layers.push({ title: 'SSH Protocol', fields: [['Protocol', 'SSH-2.0'], ['Encrypted Packet', `(${p.transfer.protocol.toUpperCase()} session hidden by encryption)`]] });
       if (p.tacacs) layers.push({ title: 'TACACS+', fields: [['Packet type', p.tacacs.type === 'authen' ? 'Authentication (1)' : p.tacacs.type === 'author' ? 'Authorization (2)' : 'Accounting (3)'], ['Session ID', String(p.tacacs.session)], ['Flags', 'Encrypted payload'], ['Encrypted Reply/Request', '(entire body hidden by the shared key)']] });
       return layers;
     }
@@ -254,6 +282,8 @@ function transport(p: IpPacket): Layer[] {
       else fields.push(['LSAs', String(o.lsas.length)]);
       return [{ title: 'Open Shortest Path First', fields }];
     }
+    case 'vrrp':
+      return [{ title: 'Virtual Router Redundancy Protocol', fields: [['Version', '2'], ['Packet type', 'Advertisement (1)'], ['Virtual Rtr ID', String(p.vrrp.group)], ['Priority', `${p.vrrp.priority}${p.vrrp.priority === 255 ? ' (Current Master, IP address owner)' : ''}`], ['Adver Int', String(p.vrrp.interval)], ['IP Address', p.vrrp.vip]] }];
     case 'udp': {
       const layers: Layer[] = [{ title: `User Datagram Protocol, Src Port: ${p.srcPort}, Dst Port: ${p.dstPort}`, fields: [['Source Port', String(p.srcPort)], ['Destination Port', String(p.dstPort)]] }];
       if (p.dhcp) {
@@ -276,6 +306,14 @@ function transport(p: IpPacket): Layer[] {
         });
       }
       if (p.hsrp) layers.push({ title: 'Cisco Hot Standby Router Protocol', fields: [['Version', String(p.hsrp.version)], ['Group', String(p.hsrp.group)], ['State', p.hsrp.state], ['Priority', String(p.hsrp.priority)], ...(p.hsrp.vip ? [['Virtual IP Address', p.hsrp.vip] as [string, string]] : [])] });
+      if (p.glbp) {
+        const g = p.glbp;
+        const fields: [string, string][] = [['Group', String(g.group)], ['State', g.state], ['Priority', String(g.priority)], ['Weighting', String(g.weighting)]];
+        if (g.vip) fields.push(['Virtual IPv4', g.vip]);
+        for (const f of g.forwarders ?? []) fields.push([`Forwarder ${f.number}`, `owner ${f.owner}${f.owner === f.primary ? '' : ` (primary ${f.primary})`}`]);
+        layers.push({ title: 'Gateway Load Balancing Protocol', fields });
+      }
+      if (p.tftp) layers.push({ title: 'Trivial File Transfer Protocol', fields: [['Opcode', tftpInfo(p.tftp)], ['Source File', p.tftp.file], ...(p.tftp.data !== undefined ? [['Data', `${p.tftp.data.length} bytes`] as [string, string]] : [])] });
       if (p.ntp) layers.push({ title: 'Network Time Protocol', fields: [['Mode', p.ntp.mode], ...(p.ntp.stratum !== undefined ? [['Stratum', String(p.ntp.stratum)] as [string, string]] : [])] });
       if (p.radius) {
         const r = p.radius;

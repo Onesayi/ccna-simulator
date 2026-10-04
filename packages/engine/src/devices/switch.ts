@@ -4,6 +4,7 @@ import { ArpInspection } from '../switching/arp-inspection';
 import { sourceGuardAllows, type SourceBinding } from '../switching/source-guard';
 import { channelProtocol, copyL2, negotiates, sameL2, type ChannelView, type MemberFlag } from '../switching/etherchannel';
 import { SpanningTree } from '../switching/stp';
+import { StormControl } from '../switching/storm-control';
 import { normaliseIfName, shortName, type ErrDisableReason, type Interface } from './device';
 import { IosDevice } from './ios-device';
 import type { Ipv4Address } from '../core/addressing';
@@ -41,7 +42,15 @@ export interface ErrRecovery {
 }
 
 /** Causes `errdisable recovery cause` accepts, in the order `show errdisable recovery` lists them. */
-export const ERR_RECOVERY_CAUSES = ['arp-inspection', 'bpduguard', 'channel-misconfig', 'dhcp-rate-limit', 'link-flap', 'psecure-violation'];
+export const ERR_RECOVERY_CAUSES = ['arp-inspection', 'bpduguard', 'channel-misconfig', 'dhcp-rate-limit', 'link-flap', 'psecure-violation', 'storm-control'];
+
+/** `ipv6 nd raguard policy <name>`: ports with a host policy drop router advertisements. */
+export interface RaGuardPolicy {
+  name: string;
+  role: 'host' | 'router';
+  /** Router advertisements dropped by ports using this policy. */
+  dropped: number;
+}
 
 /** MAC address table aging time, matching the Catalyst default of 300 seconds. */
 export const MAC_AGING_MS = 300_000;
@@ -61,12 +70,16 @@ export class Switch extends IosDevice {
   readonly staticBindings: SourceBinding[] = [];
   readonly dai: ArpInspection;
   readonly errRecovery: ErrRecovery = { causes: new Set(), interval: 300 };
+  readonly storm: StormControl;
+  readonly raGuardPolicies = new Map<string, RaGuardPolicy>();
   /** When each port was err-disabled, for the recovery timer. */
   private readonly errDisabledAt = new Map<Interface, number>();
   /** Snooping drops already logged, so retransmits do not flood the console. */
   private readonly snoopWarnings = new Set<string>();
   readonly vlans = new Map<number, string>([[1, 'default']]);
   readonly macTable: MacTableEntry[] = [];
+  /** `mls qos`: with QoS on, ports that do not trust the marking reset the DSCP to 0. */
+  mlsQos = false;
   /** `ip routing`: turns the switch into a Layer 3 switch that routes between its SVIs. */
   ipRouting = false;
   readonly stp: SpanningTree;
@@ -82,6 +95,12 @@ export class Switch extends IosDevice {
     for (let i = 1; i <= portCount; i++) this.addInterface(`GigabitEthernet0/${i}`, true);
     this.configureInterface('Vlan1'); // every Catalyst ships with a (shut down) management SVI
     const sw = this;
+    this.storm = new StormControl({
+      now: () => this.now,
+      log: this.log,
+      errDisable: (port) => this.errDisable(port, 'storm-control'),
+      trap: (port) => this.sendTrap('1.3.6.1.4.1.9.9.362.0.2', [{ oid: '1.3.6.1.2.1.2.2.1.2', type: 'STRING', value: port.name }]),
+    });
     this.dai = new ArpInspection({
       now: () => this.now,
       log: this.log,
@@ -241,20 +260,59 @@ export class Switch extends IosDevice {
     if (this.suspended(on)) return;
     if (on.portSecurity?.enabled && !this.portSecurityAllows(on, frame)) return;
     if (p.kind === 'bpdu') return this.receiveBpdu(on, p);
+    if (!this.storm.admit(on, frame)) return;
 
     const ingress = this.logicalOf(on);
     const vlan = this.ingressVlan(ingress, frame);
     if (vlan === undefined) return; // dropped: VLAN not allowed on this port
     if (!this.stp.forwarding(ingress, vlan)) return; // a discarding port neither learns nor forwards
+    if (p.kind === 'icmpv6' && p.type === 'ra' && this.raGuardDrops(on)) return;
 
     if (p.kind === 'arp' && this.dai.enabled(vlan) && !(ingress.arpInspection?.trust ?? on.arpInspection?.trust) && !this.dai.inspect(on, vlan, frame, p)) return;
     if (isIpv4(p) && !sourceGuardAllows(this, ingress, vlan, frame, p)) return;
 
-    let out: Frame | undefined = frame;
+    let out: Frame | undefined = this.trustBoundary(on, ingress, frame);
     if (p.kind === 'udp' && p.dhcp && this.snoopingOn(vlan)) out = this.snoop(on, ingress, vlan, frame, p);
     if (!out) return;
     this.learn(vlan, frame.src, ingress);
     this.switchFrame(vlan, out, ingress);
+  }
+
+  // ---------------------------------------------------------------- QoS trust
+
+  /**
+   * With `mls qos` on, a port re-marks IPv4 traffic to DSCP 0 unless it trusts the marking. A
+   * port trusting CoS derives the DSCP from the 802.1Q priority bits, which only trunks carry, so
+   * on an access port that is 0 as well. (The simulator assumes CoS on a trunk matches the DSCP.)
+   */
+  private trustBoundary(on: Interface, ingress: Interface, frame: Frame): Frame {
+    const p = frame.payload;
+    if (!this.mlsQos || !isIpv4(p) || !p.dscp) return frame;
+    const trust = ingress.qosTrust ?? on.qosTrust;
+    if (trust === 'dscp' || (trust === 'cos' && ingress.mode === 'trunk')) return frame;
+    return { ...frame, payload: { ...p, dscp: 0 } };
+  }
+
+  // ---------------------------------------------------------------- RA guard
+
+  /** The RA guard policy on a port (`attach-policy` with no name uses the host-role `default` policy). */
+  raGuardPolicy(port: Interface): RaGuardPolicy | undefined {
+    const name = port.raGuard;
+    if (name === undefined) return undefined;
+    let policy = this.raGuardPolicies.get(name);
+    if (!policy && name === 'default') {
+      policy = { name, role: 'host', dropped: 0 };
+      this.raGuardPolicies.set(name, policy);
+    }
+    return policy;
+  }
+
+  /** RA guard: a router advertisement arriving on a port whose policy says a host is attached is dropped. */
+  private raGuardDrops(port: Interface): boolean {
+    const policy = this.raGuardPolicy(port);
+    if (policy?.role !== 'host') return false;
+    policy.dropped++;
+    return true;
   }
 
   // ---------------------------------------------------------------- DHCP snooping

@@ -6,6 +6,8 @@ interface IpHeader {
   src: Ipv4Address;
   dst: Ipv4Address;
   ttl: number;
+  /** DiffServ code point (0-63) from the ToS byte. Unset means 0 (best effort). */
+  dscp?: number;
 }
 
 export interface IcmpPacket extends IpHeader {
@@ -27,6 +29,34 @@ export interface TcpPacket extends IpHeader {
   flags: 'syn' | 'syn-ack' | 'rst' | 'psh';
   /** A data segment (`psh`) carrying TACACS+. The simulator skips the handshake for these. */
   tacacs?: TacacsMessage;
+  /** A data segment carrying a whole FTP, SCP or SFTP file transfer (or its reply). */
+  transfer?: TransferMessage;
+}
+
+/**
+ * A file transfer over TCP, squeezed into one request and one reply: FTP on port 21 (user,
+ * password and file travel in clear text), SCP and SFTP on port 22 (inside SSH, so encrypted).
+ */
+export interface TransferMessage {
+  protocol: 'ftp' | 'scp' | 'sftp';
+  op: 'get' | 'put' | 'reply';
+  /** Matches a reply to its request. */
+  id: number;
+  file: string;
+  username?: string;
+  password?: string;
+  /** The file's contents: in a put, or in the reply to a get. */
+  data?: string;
+  status?: 'ok' | 'login-failed' | 'not-found';
+}
+
+/** TFTP (UDP 69): no login at all. A read or write request, the data, and an ACK or an error. */
+export interface TftpMessage {
+  op: 'rrq' | 'wrq' | 'data' | 'ack' | 'error';
+  id: number;
+  file: string;
+  data?: string;
+  error?: string;
 }
 
 /**
@@ -153,6 +183,37 @@ export interface HsrpMessage {
   vip?: Ipv4Address;
 }
 
+/** A VRRP advertisement (IP protocol 112). Only the master sends them, from the virtual MAC. */
+export interface VrrpMessage {
+  group: number;
+  priority: number;
+  vip: Ipv4Address;
+  /** Advertisement interval in seconds. */
+  interval: number;
+}
+
+/**
+ * A GLBP hello (UDP 3222). Every member sends one: it carries the sender's AVG priority and state,
+ * and from the active virtual gateway the forwarder table (which router answers for which virtual MAC).
+ */
+export interface GlbpMessage {
+  group: number;
+  priority: number;
+  state: 'speak' | 'standby' | 'active';
+  weighting: number;
+  vip?: Ipv4Address;
+  forwarders?: GlbpForwarder[];
+}
+
+export interface GlbpForwarder {
+  /** 1 to 4: the last byte of the virtual MAC. */
+  number: number;
+  /** The router the AVG first gave this forwarder to. */
+  primary: Ipv4Address;
+  /** The router answering for it now (another one after the primary fails). */
+  owner: Ipv4Address;
+}
+
 /** An NTP request (mode 3) or reply (mode 4) on UDP 123. */
 export interface NtpMessage {
   mode: 'client' | 'server';
@@ -169,6 +230,8 @@ export interface UdpPacket extends IpHeader {
   dstPort: number;
   dhcp?: DhcpMessage;
   hsrp?: HsrpMessage;
+  glbp?: GlbpMessage;
+  tftp?: TftpMessage;
   ntp?: NtpMessage;
   radius?: RadiusMessage;
   snmp?: SnmpMessage;
@@ -251,6 +314,11 @@ export interface OspfPacket extends IpHeader {
   ospf: OspfMessage;
 }
 
+export interface VrrpPacket extends IpHeader {
+  kind: 'vrrp';
+  vrrp: VrrpMessage;
+}
+
 export const OSPF_ALL_ROUTERS: Ipv4Address = '224.0.0.5';
 export const OSPF_ALL_ROUTERS_MAC: MacAddress = '0100.5e00.0005';
 
@@ -264,7 +332,7 @@ export interface ArpPacket {
 }
 
 /** IP packets, i.e. everything that is routed (ARP is not). */
-export type IpPacket = IcmpPacket | TcpPacket | UdpPacket | OspfPacket;
+export type IpPacket = IcmpPacket | TcpPacket | UdpPacket | OspfPacket | VrrpPacket;
 
 // ---------------------------------------------------------------- Layer 2 control protocols
 
@@ -329,6 +397,10 @@ export const HSRP_V1_GROUP: Ipv4Address = '224.0.0.2';
 export const HSRP_V2_GROUP: Ipv4Address = '224.0.0.102';
 export const HSRP_V1_MAC: MacAddress = '0100.5e00.0002';
 export const HSRP_V2_MAC: MacAddress = '0100.5e00.0066';
+export const VRRP_GROUP: Ipv4Address = '224.0.0.18';
+export const VRRP_MAC: MacAddress = '0100.5e00.0012';
+/** GLBP shares 224.0.0.102 with HSRP version 2, on its own UDP port. */
+export const GLBP_GROUP: Ipv4Address = '224.0.0.102';
 export const SLOW_PROTOCOLS_MAC: MacAddress = '0180.c200.0002';
 
 // ---------------------------------------------------------------- IPv6

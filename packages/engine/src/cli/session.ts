@@ -4,7 +4,10 @@ import type { Interface } from '../devices/device';
 import type { Device } from '../devices/device';
 import type { IpDevice } from '../devices/ip-device';
 import { Router } from '../devices/router';
-import { Switch } from '../devices/switch';
+import { Switch, type RaGuardPolicy } from '../devices/switch';
+import type { ClassMap, PolicyClass, PolicyMap } from '../services/qos';
+import { L2_TRAFFIC_COMMANDS } from './commands-l2traffic';
+import { QOS_COMMANDS } from './commands-qos';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
 import type { ArpAcl } from '../switching/arp-inspection';
@@ -16,6 +19,8 @@ import { AAA_COMMANDS } from './commands-aaa';
 import { SNMP_COMMANDS } from './commands-snmp';
 import { MANAGEMENT_COMMANDS } from './commands-management';
 import { HSRP_COMMANDS } from './commands-hsrp';
+import { FHRP_COMMANDS } from './commands-fhrp';
+import { FILE_COMMANDS } from './commands-files';
 import { Interaction, type Shell } from './remote';
 
 export type { Shell } from './remote';
@@ -59,6 +64,10 @@ const PROMPT_SUFFIX: Record<Mode, string> = {
   'config-server-tacacs': '(config-server-tacacs)#',
   'config-sg-radius': '(config-sg-radius)#',
   'config-sg-tacacs+': '(config-sg-tacacs+)#',
+  'config-ra-guard': '(config-ra-guard)#',
+  'config-cmap': '(config-cmap)#',
+  'config-pmap': '(config-pmap)#',
+  'config-pmap-c': '(config-pmap-c)#',
 };
 
 export interface CliOptions {
@@ -86,6 +95,10 @@ export class CliSession implements Shell, Session {
   currentLine?: LineConfig;
   currentAaaServer?: AaaServer;
   currentAaaGroup?: AaaGroup;
+  currentRaGuard?: RaGuardPolicy;
+  currentClassMap?: ClassMap;
+  currentPolicyMap?: PolicyMap;
+  currentPolicyClass?: PolicyClass;
   readonly io = new Interaction();
   readonly remote: boolean;
   closed = false;
@@ -248,10 +261,11 @@ export class CliSession implements Shell, Session {
 
   private supports(c: Command): boolean {
     const isSwitch = this.device instanceof Switch;
-    if (/arp inspection|arp access-list|verify source|source binding|errdisable/.test(c.syntax)) return isSwitch;
+    if (/arp inspection|arp access-list|verify source|source binding|errdisable|storm-control|raguard|device-role|mls qos/.test(c.syntax)) return isSwitch;
+    if (/class-map|policy-map|service-policy/.test(c.syntax)) return !isSwitch;
     if (/switchport|vlan|mac address|trunk|default-gateway|ip routing|spanning-tree|channel|port-security|interfaces status/.test(c.syntax)) return isSwitch;
     if (/snooping/.test(c.syntax)) return isSwitch;
-    if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|ipv6|standby/.test(c.syntax)) return !isSwitch;
+    if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|ipv6|standby|vrrp|glbp/.test(c.syntax)) return !isSwitch;
     return true;
   }
 }
@@ -345,7 +359,8 @@ const COMMANDS: Command[] = [
     return 'Enter configuration commands, one per line.  End with CNTL/Z.';
   } },
   { syntax: 'exit', modes: [...EXEC, ...CONFIG_MODES], help: 'Exit from the current mode', run: (s) => {
-    if (s.mode !== 'config' && CONFIG_MODES.includes(s.mode)) s.mode = 'config';
+    if (s.mode === 'config-pmap-c') s.mode = 'config-pmap';
+    else if (s.mode !== 'config' && CONFIG_MODES.includes(s.mode)) s.mode = 'config';
     else if (s.mode === 'config') s.mode = 'privileged';
     else if (s.remote) s.closed = true;
     else return s.logOut();
@@ -361,9 +376,6 @@ const COMMANDS: Command[] = [
     if (clash && clash !== s.device) throw new Error(`Hostname ${name} is already used by another device in this topology`);
     s.device.hostname = name ?? s.device.hostname;
   } },
-  { syntax: 'copy running-config startup-config', modes: ['privileged'], help: 'Save the configuration', run: () =>
-    'Destination filename [startup-config]?\nBuilding configuration...\n[OK]' },
-  { syntax: 'write memory', modes: ['privileged'], help: 'Save the configuration', run: () => 'Building configuration...\n[OK]' },
 
   // Connectivity tests
   { syntax: 'ping <ip>', modes: EXEC, help: 'Send echo messages (IPv4 or IPv6)', run: (s, [dst]) => iosPing(s, dst!, 5) },
@@ -521,7 +533,11 @@ const COMMANDS: Command[] = [
   ...IPV6_COMMANDS,
   ...MANAGEMENT_COMMANDS,
   ...HSRP_COMMANDS,
+  ...FHRP_COMMANDS,
+  ...FILE_COMMANDS,
   ...L2_SECURITY_COMMANDS,
+  ...L2_TRAFFIC_COMMANDS,
+  ...QOS_COMMANDS,
   ...AAA_COMMANDS,
   ...SNMP_COMMANDS,
 ];

@@ -15,14 +15,16 @@ const PC_HELP = `Available commands:
   ipv6config                             Show the IPv6 configuration
   ipv6config <ipv6>/<len> [gateway]      Set a static IPv6 address
   ipv6config autoconfig                  Get an IPv6 address with SLAAC
-  ping [-n count] <ip|ipv6>              Send ICMP echo requests
+  ping [-n count] [-v tos] <ip|ipv6>     Send ICMP echo requests (-v sets the ToS byte: 184 is DSCP EF)
   tracert <ip|ipv6>                      Trace the route to a host
   arp -a                                 Show the ARP cache
   arp -d                                 Clear the ARP cache
   telnet <ip> [port]                     Open a telnet session (or a TCP connection to a port)
   ssh -l <user> <ip>                     Open an SSH session
   curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)
-  arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)`;
+  arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)
+  fake_router6 <prefix>/64               Lab attack tool: rogue IPv6 router advertisement
+  flood broadcast|multicast|unicast [-n count]   Lab traffic generator: count frames in one second (default 1000)`;
 
 const WIFI_HELP = `
 Wi-Fi (laptops):
@@ -85,6 +87,10 @@ export class PcShell implements Shell {
         return this.curl(args);
       case 'arpspoof':
         return this.arpspoof(args);
+      case 'fake_router6':
+        return this.fakeRouter6(args);
+      case 'flood':
+        return this.flood(args);
       default:
         return `Invalid Command.`;
     }
@@ -248,9 +254,18 @@ export class PcShell implements Shell {
       args = args.filter((_, i) => i !== n && i !== n + 1);
       if (!Number.isInteger(count) || count < 1 || count > 100) return 'Bad value for option -n.';
     }
+    // Windows' -v sets the whole ToS byte; the DSCP is its top six bits.
+    let dscp: number | undefined;
+    const v = args.findIndex((a) => a.toLowerCase() === '-v');
+    if (v >= 0) {
+      const tos = Number(args[v + 1]);
+      args = args.filter((_, i) => i !== v && i !== v + 1);
+      if (!Number.isInteger(tos) || tos < 0 || tos > 255) return 'Bad value for option -v, valid range is from 0 to 255.';
+      dscp = tos >> 2;
+    }
     const dst = target(args[0]);
     if (!dst) return `Ping request could not find host ${args[0] ?? ''}. Please check the name and try again.`;
-    const results = this.pc.pingAny(dst, count);
+    const results = this.pc.pingAny(dst, count, undefined, dscp);
     this.pc.network?.run();
     return formatWindowsPing(dst, results);
   }
@@ -318,6 +333,36 @@ export class PcShell implements Shell {
     this.pc.network?.run();
     const mac = this.pc.nic.mac;
     return `Sent ${count} gratuitous ARP ${count === 1 ? 'reply' : 'replies'}: ${ip} is-at ${mac}`;
+  }
+
+  private fakeRouter6(args: string[]): string {
+    let parsed: { address: string; prefix: number };
+    try {
+      parsed = parseIpv6Prefix(args[0] ?? '');
+    } catch {
+      return 'Usage: fake_router6 <prefix>/64';
+    }
+    if (!this.pc.nic.isUp) return 'Ethernet0 is not connected.';
+    this.pc.rogueRouterAdvert(parsed.address, parsed.prefix);
+    this.pc.network?.run();
+    return `Starting to advertise router ${this.pc.ipv6.linkLocal(this.pc.nic).toUpperCase()} with prefix ${args[0]!.toUpperCase()} (Press Control-C to end) ...`;
+  }
+
+  private flood(args: string[]): string {
+    let count = 1000;
+    const n = args.findIndex((a) => a.toLowerCase() === '-n');
+    if (n >= 0) {
+      count = Number(args[n + 1]);
+      args = args.filter((_, i) => i !== n && i !== n + 1);
+      if (!Number.isInteger(count) || count < 1 || count > 5000) return 'Bad value for option -n (1-5000).';
+    }
+    const kind = (['broadcast', 'multicast', 'unicast'] as const).find((k) => k.startsWith(args[0]?.toLowerCase() ?? '-'));
+    if (!kind) return 'Usage: flood broadcast|multicast|unicast [-n count]';
+    if (!this.pc.nic.isUp) return 'Ethernet0 is not connected.';
+    const before = this.pc.nic.counters.out;
+    this.pc.flood(kind, count);
+    this.pc.network?.run();
+    return `Sent ${this.pc.nic.counters.out - before} ${kind} frames in 1 second (${count} pps).`;
   }
 
   private arp(args: string[]): string {

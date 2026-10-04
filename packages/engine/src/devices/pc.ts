@@ -1,5 +1,5 @@
 import { BROADCAST_MAC, ipToInt, type Ipv4Address } from '../core/addressing';
-import { isLinkLocal, normaliseIpv6, type Ipv6Address } from '../core/ipv6';
+import { ALL_NODES, ipv6MulticastMac, ipv6Network, isLinkLocal, normaliseIpv6, type Ipv6Address } from '../core/ipv6';
 import type { DhcpMessage, Dot11Frame, Frame, UdpPacket } from '../core/frames';
 import { DhcpClient } from '../services/dhcp';
 import { WifiClient, isBeaconing } from '../wireless/wifi';
@@ -168,6 +168,40 @@ export class Pc extends IpDevice {
         this.transmitL3(this.nic, BROADCAST_MAC, { kind: 'arp', op: 'reply', senderMac: this.nic.mac, senderIp: ip, targetMac: BROADCAST_MAC, targetIp: ip }),
       );
     }
+  }
+
+  /**
+   * A lab traffic generator: sends `count` broadcast, multicast or unknown-unicast frames spread
+   * evenly over one second, which is what a babbling NIC or a switching loop looks like to the
+   * switch port (and what storm control measures).
+   */
+  flood(kind: 'broadcast' | 'multicast' | 'unicast', count: number): void {
+    const dstMac = kind === 'broadcast' ? BROADCAST_MAC : kind === 'multicast' ? '0100.5e01.0101' : 'dead.beef.0001';
+    const dst = kind === 'broadcast' ? LIMITED_BROADCAST : kind === 'multicast' ? '239.1.1.1' : '203.0.113.99';
+    const src = this.nic.ip?.address ?? '0.0.0.0';
+    for (let k = 0; k < count; k++) {
+      this.schedule(Math.floor((k * 1000) / count), `flood ${kind}`, () =>
+        this.transmitL3(this.nic, dstMac, { kind: 'udp', src, dst, ttl: 128, srcPort: 9, dstPort: 9 }),
+      );
+    }
+  }
+
+  /**
+   * A lab attack tool (like THC's fake_router6): advertises this PC as an IPv6 router for
+   * `prefix`. Hosts using SLAAC take an address in the prefix and this PC as their gateway.
+   */
+  rogueRouterAdvert(prefix: Ipv6Address, length: number): void {
+    this.transmitL3(this.nic, ipv6MulticastMac(ALL_NODES), {
+      kind: 'icmpv6',
+      type: 'ra',
+      src: this.ipv6.linkLocal(this.nic),
+      dst: ALL_NODES,
+      hopLimit: 255,
+      id: 0,
+      seq: 0,
+      mac: this.nic.mac,
+      prefixes: [{ prefix: ipv6Network(normaliseIpv6(prefix), length), length }],
+    });
   }
 
   private broadcast(p: UdpPacket): void {

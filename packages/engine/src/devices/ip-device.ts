@@ -7,7 +7,7 @@ import {
   type Ipv4Address,
   type MacAddress,
 } from '../core/addressing';
-import type { ArpPacket, Frame, IpPacket, Packet, TcpPacket, UdpPacket } from '../core/frames';
+import type { ArpPacket, Frame, IpPacket, Packet, TcpPacket, TftpMessage, TransferMessage, UdpPacket } from '../core/frames';
 import type { ScheduledEvent } from '../core/scheduler';
 import { Ipv6Stack } from '../ipv6/stack';
 import { Device, type Interface } from './device';
@@ -63,6 +63,27 @@ export interface ConnectResult {
   /** Who sent the ICMP error, for `unreachable`. */
   from?: Ipv4Address;
 }
+
+export type TransferProtocol = 'tftp' | 'ftp' | 'scp' | 'sftp';
+
+export interface TransferRequest {
+  protocol: TransferProtocol;
+  op: 'get' | 'put';
+  file: string;
+  /** The file's contents, for a put. */
+  data?: string;
+  username?: string;
+  password?: string;
+}
+
+export interface TransferResult {
+  status: 'ok' | 'not-found' | 'login-failed' | 'refused' | 'timeout' | 'no-route';
+  /** The file's contents, for a get. */
+  data?: string;
+}
+
+/** The TCP port each file transfer protocol uses (SCP and SFTP both run inside SSH). */
+export const TRANSFER_PORTS: Record<Exclude<TransferProtocol, 'tftp'>, number> = { ftp: 21, scp: 22, sftp: 22 };
 
 export interface ArpEntry {
   mac: MacAddress;
@@ -122,6 +143,8 @@ export abstract class IpDevice extends Device {
   defaultGateway?: Ipv4Address;
   /** Answer ARP for remote addresses we have a route to (IOS default on routed interfaces). */
   proxyArp = true;
+  /** The DSCP this host's applications mark their own traffic with (a softphone marks EF). */
+  marking?: number;
 
   /** Routers forward packets between interfaces; hosts only send and receive their own. */
   abstract get forwarding(): boolean;
@@ -142,6 +165,8 @@ export abstract class IpDevice extends Device {
   private waiters = new Map<string, Waiter>();
   private echoId = 1;
   private nextPort = 49152;
+  private transferId = 1;
+  private readonly transferReplies = new Map<number, TftpMessage | TransferMessage>();
 
   constructor(hostname: string) {
     super(hostname);
@@ -169,8 +194,8 @@ export abstract class IpDevice extends Device {
   }
 
   /** Pings an IPv4 or IPv6 address. */
-  pingAny(dst: string, count = 4, timeoutMs = ICMP_TIMEOUT_MS): PingResult[] {
-    return dst.includes(':') ? this.ipv6.ping(dst, count, timeoutMs) : this.ping(dst, count, timeoutMs);
+  pingAny(dst: string, count = 4, timeoutMs = ICMP_TIMEOUT_MS, dscp?: number): PingResult[] {
+    return dst.includes(':') ? this.ipv6.ping(dst, count, timeoutMs) : this.ping(dst, count, timeoutMs, dscp ?? this.marking);
   }
 
   /** Traceroute to an IPv4 or IPv6 address. */
@@ -204,6 +229,16 @@ export abstract class IpDevice extends Device {
     return true;
   }
 
+  /** A QoS service policy on packets arriving on `iface`: re-marks them, or drops them (a policer). */
+  protected qosIn(_iface: Interface, p: IpPacket): IpPacket | undefined {
+    return p;
+  }
+
+  /** A QoS service policy on packets forwarded out of `iface`. */
+  protected qosOut(_iface: Interface, p: IpPacket): IpPacket | undefined {
+    return p;
+  }
+
   /** NAT outside-to-inside, applied before routing. */
   protected natInbound(_iface: Interface, p: IpPacket): IpPacket {
     return p;
@@ -224,8 +259,11 @@ export abstract class IpDevice extends Device {
     return false;
   }
 
-  /** The virtual MAC to answer ARP with when `ip` is a virtual address we own on `iface` (HSRP). */
-  protected virtualMacFor(_iface: Interface, _ip: Ipv4Address): MacAddress | undefined {
+  /**
+   * The virtual MAC to answer ARP with when `ip` is a virtual address we own on `iface` (HSRP, VRRP,
+   * GLBP). `requester` is the asking host on an ARP request, for GLBP's load balancing.
+   */
+  protected virtualMacFor(_iface: Interface, _ip: Ipv4Address, _requester?: MacAddress): MacAddress | undefined {
     return undefined;
   }
 
@@ -256,6 +294,9 @@ export abstract class IpDevice extends Device {
   }
 
   protected handleOspf(_iface: Interface, _p: IpPacket, _frame: Frame): void {}
+
+  /** VRRP advertisements (IP protocol 112). */
+  protected handleVrrp(_iface: Interface, _p: IpPacket): void {}
 
   // ---------------------------------------------------------------- routing table
 
@@ -321,7 +362,7 @@ export abstract class IpDevice extends Device {
   // ---------------------------------------------------------------- ping, traceroute, connect
 
   /** Sends `count` echo requests one after another. Results fill in as the topology runs. */
-  ping(dst: Ipv4Address, count = 4, timeoutMs = ICMP_TIMEOUT_MS): PingResult[] {
+  ping(dst: Ipv4Address, count = 4, timeoutMs = ICMP_TIMEOUT_MS, dscp = this.marking): PingResult[] {
     ipToInt(dst); // validates
     const id = this.echoId++;
     const results: PingResult[] = Array.from({ length: count }, (_, seq) => ({ seq, success: false, status: 'pending' }));
@@ -338,7 +379,7 @@ export abstract class IpDevice extends Device {
         else result.status = reply.kind === 'icmp' && reply.type === 'time-exceeded' ? 'ttl-exceeded' : 'unreachable';
         done();
       });
-      if (!this.originate(dst, (src) => ({ kind: 'icmp', type: 'echo-request', src, dst, ttl: this.initialTtl, id, seq }))) {
+      if (!this.originate(dst, (src) => ({ kind: 'icmp', type: 'echo-request', src, dst, ttl: this.initialTtl, id, seq, ...(dscp ? { dscp } : {}) }))) {
         this.forget(`icmp:${id}:${seq}`);
         result.status = 'no-route';
         done();
@@ -412,6 +453,36 @@ export abstract class IpDevice extends Device {
     return result;
   }
 
+  /**
+   * A file transfer client (`copy` on IOS): TFTP is one UDP request to port 69; FTP, SCP and SFTP
+   * open a TCP connection first, then send one request. Runs the topology until the server answers.
+   */
+  transfer(dst: Ipv4Address, req: TransferRequest): TransferResult {
+    ipToInt(dst);
+    const id = this.transferId++;
+    const srcPort = this.nextPort++;
+    if (req.protocol === 'tftp') {
+      const tftp: TftpMessage = { op: req.op === 'get' ? 'rrq' : 'wrq', id, file: req.file, data: req.data };
+      if (!this.originate(dst, (src) => ({ kind: 'udp', src, dst, ttl: this.initialTtl, srcPort, dstPort: 69, tftp }))) return { status: 'no-route' };
+    } else {
+      const port = TRANSFER_PORTS[req.protocol];
+      const conn = this.connect(dst, port);
+      this.network?.run();
+      if (conn.status === 'no-route') return { status: 'no-route' };
+      if (conn.status === 'refused') return { status: 'refused' };
+      if (conn.status !== 'open') return { status: 'timeout' };
+      const transfer: TransferMessage = { protocol: req.protocol, op: req.op, id, file: req.file, data: req.data, username: req.username, password: req.password };
+      this.originate(dst, (src) => ({ kind: 'tcp', src, dst, ttl: this.initialTtl, srcPort, dstPort: port, flags: 'psh', transfer }));
+    }
+    this.network?.run();
+    const reply = this.transferReplies.get(id);
+    this.transferReplies.delete(id);
+    if (!reply) return { status: 'timeout' };
+    if ('protocol' in reply) return { status: reply.status ?? 'ok', data: reply.data };
+    if (reply.op === 'error') return { status: 'not-found' };
+    return { status: 'ok', data: reply.data };
+  }
+
   private expect(key: string, timeoutMs: number, resolve: (reply: IpPacket | undefined) => void): void {
     const waiter: Waiter = { resolve };
     waiter.timer = this.schedule(timeoutMs, `timeout ${key}`, () => {
@@ -436,15 +507,19 @@ export abstract class IpDevice extends Device {
 
   /** Sends a locally generated packet, sourced from the exit interface. Returns false when there is no route at all. */
   protected originate(dst: Ipv4Address, build: (src: Ipv4Address) => IpPacket): boolean {
+    const marked = (src: Ipv4Address): IpPacket => {
+      const p = build(src);
+      return this.marking && p.dscp === undefined ? { ...p, dscp: this.marking } : p;
+    };
     if (this.ownsIp(dst)) {
       // Talking to yourself never touches the wire.
-      const p = build(dst);
+      const p = marked(dst);
       this.schedule(0, `local ${dst}`, () => this.deliverLocal(p));
       return true;
     }
     const path = this.lookup(dst);
     if (!path?.iface.ip) return false;
-    this.output(build(path.iface.ip.address), path);
+    this.output(marked(path.iface.ip.address), path);
     return true;
   }
 
@@ -477,9 +552,12 @@ export abstract class IpDevice extends Device {
     if (!this.permits(iface, 'in', p)) return this.icmpError('unreachable', p, iface);
     if (dhcp && this.handleDhcp(iface, p)) return;
     if (p.kind === 'ospf') return this.handleOspf(iface, p, frame);
+    if (p.kind === 'vrrp') return this.handleVrrp(iface, p);
     if (p.kind === 'udp' && this.handleUdpControl(iface, p, frame)) return;
     if (multicast) return;
-    const q = this.natInbound(iface, p);
+    const marked = this.qosIn(iface, p);
+    if (!marked) return;
+    const q = this.natInbound(iface, marked);
     if (this.ownsIp(q.dst) || q.dst === LIMITED_BROADCAST || this.ownsVirtualIp(q.dst)) return this.deliverLocal(q);
     if (frame.dst === BROADCAST_MAC || !this.forwarding) return;
     this.forward(q, iface);
@@ -494,11 +572,13 @@ export abstract class IpDevice extends Device {
       return this.resolveWaiter(o?.kind === 'tcp' ? `tcp:${o.srcPort}` : `icmp:${p.id}:${p.seq}`, p);
     }
     if (p.kind === 'tcp') {
+      if (p.flags === 'psh' && p.transfer?.op === 'reply') return void this.transferReplies.set(p.transfer.id, p.transfer);
       if (p.flags === 'psh') return this.handleTcpData(p);
       if (p.flags !== 'syn') return this.resolveWaiter(`tcp:${p.dstPort}`, p);
       const flags = this.listeningPorts.includes(p.dstPort) ? 'syn-ack' : 'rst';
       return this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: this.initialTtl, srcPort: p.dstPort, dstPort: p.srcPort, flags });
     }
+    if (p.kind === 'udp' && p.tftp && p.dstPort !== 69) return void this.transferReplies.set(p.tftp.id, p.tftp);
     if (p.kind === 'udp') this.handleUdp(p);
   }
 
@@ -510,12 +590,13 @@ export abstract class IpDevice extends Device {
     const out = this.natOutbound(ingress, path.iface, { ...p, ttl });
     if (!out) return;
     if (!this.permits(path.iface, 'out', out)) return this.icmpError('unreachable', p, ingress);
-    this.output(out, path);
+    const queued = this.qosOut(path.iface, out);
+    if (queued) this.output(queued, path);
   }
 
   /** Errors are sourced from the interface the offending packet arrived on. Never error about an error. */
   private icmpError(type: 'time-exceeded' | 'unreachable', p: IpPacket, ingress: Interface): void {
-    if (p.kind === 'ospf' || p.kind === 'udp') return;
+    if (p.kind === 'ospf' || p.kind === 'vrrp' || p.kind === 'udp') return;
     if (p.kind === 'icmp' && p.type !== 'echo-request' && p.type !== 'echo-reply') return;
     const path = this.lookup(p.src);
     const src = ingress.ip?.address;
@@ -531,9 +612,9 @@ export abstract class IpDevice extends Device {
     const entry = this.arpTable.get(arpTarget);
     if (entry && entry.iface === iface) return this.transmitL3(iface, entry.mac, p);
 
-    // Protocols with their own retransmission (TACACS+ over TCP, RADIUS, SNMP, CAPWAP) survive
+    // Protocols with their own retransmission (TACACS+ over TCP, RADIUS, SNMP, CAPWAP, file transfers) survive
     // the dropped first packet on IOS, so they wait for ARP here instead of modeling retries.
-    const hold = this.queueDuringArp || (p.kind === 'tcp' && p.tacacs !== undefined) || (p.kind === 'udp' && (p.radius ?? p.snmp ?? p.capwap) !== undefined);
+    const hold = this.queueDuringArp || (p.kind === 'tcp' && (p.tacacs ?? p.transfer) !== undefined) || (p.kind === 'udp' && (p.radius ?? p.snmp ?? p.capwap ?? p.tftp) !== undefined);
     const queue = this.pendingArp.get(arpTarget);
     if (queue) {
       if (hold) queue.push(p);
@@ -560,7 +641,7 @@ export abstract class IpDevice extends Device {
       this.log.push(`%IP-4-DUPADDR: Duplicate address ${ip.address} on ${iface.name}, sourced by ${p.senderMac}`);
       return;
     }
-    const virtual = this.virtualMacFor(iface, p.targetIp);
+    const virtual = this.virtualMacFor(iface, p.targetIp, p.op === 'request' ? p.senderMac : undefined);
     const forMe = p.targetIp === ip.address || virtual !== undefined;
     // RFC 826: always refresh an existing entry; only create one when we are the target.
     // Replies to proxy ARP carry an off-subnet sender IP, so no subnet check here.
