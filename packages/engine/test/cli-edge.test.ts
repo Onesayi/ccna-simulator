@@ -44,7 +44,8 @@ describe('IOS CLI edge cases', () => {
   it('saves the configuration', () => {
     const { run } = on(new Router('R1'));
     run('enable');
-    expect(run('copy running-config startup-config')).toMatch(/\[OK\]/);
+    expect(run('copy running-config startup-config')).toBe('');
+    expect(run('')).toMatch(/\[OK\]/);
     expect(run('write memory')).toMatch(/\[OK\]/);
   });
 

@@ -20,7 +20,7 @@ export type InterfaceKind = 'physical' | 'subinterface' | 'svi' | 'loopback' | '
 export type DeviceKind = 'pc' | 'server' | 'switch' | 'router' | 'wlc' | 'ap';
 
 /** Why a port was err-disabled. `shutdown` then `no shutdown` brings it back. */
-export type ErrDisableReason = 'bpduguard' | 'psecure-violation' | 'arp-inspection';
+export type ErrDisableReason = 'bpduguard' | 'psecure-violation' | 'arp-inspection' | 'storm-control';
 
 export type ChannelMode = 'on' | 'active' | 'passive' | 'desirable' | 'auto';
 
@@ -135,6 +135,55 @@ export interface Interface {
   arpInspection?: { trust?: boolean; rate?: number | 'none'; burst?: number };
   /** `ip verify source`: IP Source Guard filters on the source IP, or on IP and MAC with `port-security`. */
   sourceGuard?: 'ip' | 'ip-mac';
+  /** VRRP groups on this interface (`vrrp ...`). */
+  vrrp?: VrrpGroupConfig[];
+  /** GLBP groups on this interface (`glbp ...`). */
+  glbp?: GlbpGroupConfig[];
+  /** `storm-control ...` thresholds and action. */
+  stormControl?: StormControlConfig;
+  /** `ipv6 nd raguard attach-policy [name]`: the RA guard policy on this port. */
+  raGuard?: string;
+  /** `service-policy input|output <policy-map>`. */
+  servicePolicy?: { input?: string; output?: string };
+  /** `mls qos trust dscp|cos`: keep the marking that arrives (with `mls qos` on, untrusted ports reset DSCP to 0). */
+  qosTrust?: 'dscp' | 'cos';
+}
+
+export interface VrrpGroupConfig {
+  group: number;
+  vip?: Ipv4Address;
+  priority: number;
+  /** On by default in VRRP, unlike HSRP. */
+  preempt: boolean;
+  description?: string;
+}
+
+export type GlbpLoadBalancing = 'round-robin' | 'weighted' | 'host-dependent';
+
+export interface GlbpGroupConfig {
+  group: number;
+  vip?: Ipv4Address;
+  priority: number;
+  /** AVG preemption: off by default, as in HSRP. */
+  preempt: boolean;
+  weighting: number;
+  loadBalancing: GlbpLoadBalancing;
+}
+
+/** One storm-control threshold: a percentage of the link, or packets per second. */
+export interface StormLevel {
+  unit: 'percent' | 'pps';
+  rising: number;
+  /** Traffic must drop below this before the port forwards again (defaults to `rising`). */
+  falling?: number;
+}
+
+export interface StormControlConfig {
+  broadcast?: StormLevel;
+  multicast?: StormLevel;
+  unicast?: StormLevel;
+  /** `storm-control action shutdown` err-disables the port; `trap` also sends an SNMP trap. Otherwise excess frames are dropped. */
+  action?: 'shutdown' | 'trap';
 }
 
 export interface HsrpGroupConfig {

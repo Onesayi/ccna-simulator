@@ -1,22 +1,28 @@
 import { BROADCAST_MAC, prefixToMask, sameSubnet, type Ipv4Address, type MacAddress } from '../core/addressing';
 import {
+  GLBP_GROUP,
   HSRP_V1_GROUP,
   HSRP_V1_MAC,
   HSRP_V2_GROUP,
   HSRP_V2_MAC,
   OSPF_ALL_ROUTERS,
   OSPF_ALL_ROUTERS_MAC,
+  VRRP_GROUP,
+  VRRP_MAC,
   type DhcpMessage,
   type Frame,
   type IpPacket,
   type OspfMessage,
   type UdpPacket,
 } from '../core/frames';
+import { Glbp } from '../routing/glbp';
 import { Hsrp } from '../routing/hsrp';
+import { Vrrp } from '../routing/vrrp';
 import { OspfProcess } from '../routing/ospf';
 import { evaluateAcl, type Acl } from '../services/acl';
 import { DhcpClient, DhcpServer } from '../services/dhcp';
 import { Nat } from '../services/nat';
+import { Qos } from '../services/qos';
 import { displayIfName, normaliseIfName, type Interface } from './device';
 import { IosDevice } from './ios-device';
 import { LIMITED_BROADCAST, type Route, type StaticRoute } from './ip-device';
@@ -51,6 +57,31 @@ export class Router extends IosDevice {
       const v2 = msg.version === 2;
       const packet: IpPacket = { kind: 'udp', src: iface.ip.address, dst: v2 ? HSRP_V2_GROUP : HSRP_V1_GROUP, ttl: 1, srcPort: 1985, dstPort: 1985, hsrp: msg };
       this.transmitL3(iface, v2 ? HSRP_V2_MAC : HSRP_V1_MAC, packet, srcMac);
+    },
+  });
+  readonly qos = new Qos({
+    aclPermits: (name, p) => {
+      const acl = this.acls.get(name);
+      return acl ? evaluateAcl(acl, p) === 'permit' : undefined;
+    },
+    now: () => this.now,
+  });
+  readonly vrrp = new Vrrp({
+    interfaces: this.interfaces,
+    log: this.log,
+    now: () => this.now,
+    send: (iface, vrrp, srcMac) => {
+      if (!iface.ip) return;
+      this.transmitL3(iface, VRRP_MAC, { kind: 'vrrp', src: iface.ip.address, dst: VRRP_GROUP, ttl: 255, vrrp }, srcMac);
+    },
+  });
+  readonly glbp = new Glbp({
+    interfaces: this.interfaces,
+    log: this.log,
+    now: () => this.now,
+    send: (iface, glbp, srcMac) => {
+      if (!iface.ip) return;
+      this.transmitL3(iface, HSRP_V2_MAC, { kind: 'udp', src: iface.ip.address, dst: GLBP_GROUP, ttl: 255, srcPort: 3222, dstPort: 3222, glbp }, srcMac);
     },
   });
   /** `ip dhcp relay information trust-all`. */
@@ -107,6 +138,8 @@ export class Router extends IosDevice {
     super.tick();
     this.tickServices();
     this.hsrp.tick();
+    this.vrrp.tick();
+    this.glbp.tick();
     for (const p of this.ospf.values()) p.tick();
     for (const [iface, client] of this.dhcpClients) {
       if (!iface.isUp) this.dhcpWasDown.add(iface);
@@ -117,6 +150,8 @@ export class Router extends IosDevice {
   override settle(): boolean {
     let changed = this.settleServices();
     changed = this.hsrp.settle() || changed;
+    changed = this.vrrp.settle() || changed;
+    changed = this.glbp.settle() || changed;
     for (const p of this.ospf.values()) changed = p.settle() || changed;
     return changed;
   }
@@ -129,24 +164,34 @@ export class Router extends IosDevice {
     return ['R'];
   }
 
-  // ---------------------------------------------------------------- HSRP
+  // ---------------------------------------------------------------- first hop redundancy: HSRP, VRRP and GLBP
 
   protected override handleUdpControl(iface: Interface, p: UdpPacket): boolean {
-    if (!p.hsrp || p.dstPort !== 1985) return false;
-    this.hsrp.receive(iface, p.hsrp, p.src);
-    return true;
+    if (p.hsrp && p.dstPort === 1985) {
+      this.hsrp.receive(iface, p.hsrp, p.src);
+      return true;
+    }
+    if (p.glbp && p.dstPort === 3222) {
+      this.glbp.receive(iface, p.glbp, p.src);
+      return true;
+    }
+    return false;
+  }
+
+  protected override handleVrrp(iface: Interface, p: IpPacket): void {
+    if (p.kind === 'vrrp') this.vrrp.receive(iface, p.vrrp, p.src);
   }
 
   protected override acceptsMac(mac: MacAddress, iface: Interface): boolean {
-    return this.hsrp.ownsMac(iface, mac);
+    return this.hsrp.ownsMac(iface, mac) || this.vrrp.ownsMac(iface, mac) || this.glbp.ownsMac(iface, mac);
   }
 
-  protected override virtualMacFor(iface: Interface, ip: Ipv4Address): MacAddress | undefined {
-    return this.hsrp.activeMacFor(iface, ip);
+  protected override virtualMacFor(iface: Interface, ip: Ipv4Address, requester?: MacAddress): MacAddress | undefined {
+    return this.hsrp.activeMacFor(iface, ip) ?? this.vrrp.activeMacFor(iface, ip) ?? this.glbp.activeMacFor(iface, ip, requester);
   }
 
   protected override ownsVirtualIp(ip: Ipv4Address): boolean {
-    return this.hsrp.ownsVip(ip);
+    return this.hsrp.ownsVip(ip) || this.vrrp.ownsVip(ip) || this.glbp.ownsVip(ip);
   }
 
   ospfProcess(pid: number): OspfProcess {
@@ -174,7 +219,10 @@ export class Router extends IosDevice {
   }
 
   protected override acceptsMulticast(mac: MacAddress, iface: Interface): boolean {
-    if (mac === HSRP_V1_MAC || mac === HSRP_V2_MAC) return (iface.hsrp?.groups.length ?? 0) > 0 && (iface.hsrp!.version === 2) === (mac === HSRP_V2_MAC);
+    if (mac === VRRP_MAC) return (iface.vrrp?.length ?? 0) > 0;
+    const hsrp = (v: 1 | 2) => (iface.hsrp?.groups.length ?? 0) > 0 && iface.hsrp!.version === v;
+    if (mac === HSRP_V1_MAC) return hsrp(1);
+    if (mac === HSRP_V2_MAC) return hsrp(2) || (iface.glbp?.length ?? 0) > 0;
     if (mac !== OSPF_ALL_ROUTERS_MAC) return false;
     return [...this.ospf.values()].some((p) => {
       const oi = p.ifaces.get(iface);
@@ -203,6 +251,14 @@ export class Router extends IosDevice {
     const acl = name ? this.acls.get(name) : undefined;
     // An access-group pointing at an ACL that does not exist filters nothing.
     return !acl || evaluateAcl(acl, p) === 'permit';
+  }
+
+  protected override qosIn(iface: Interface, p: IpPacket): IpPacket | undefined {
+    return this.qos.apply(iface, 'input', p);
+  }
+
+  protected override qosOut(iface: Interface, p: IpPacket): IpPacket | undefined {
+    return this.qos.apply(iface, 'output', p);
   }
 
   protected override natInbound(iface: Interface, p: IpPacket): IpPacket {

@@ -8,6 +8,7 @@ import { Switch } from '../devices/switch';
 import { IosDevice } from '../devices/ios-device';
 import { ipv6InterfaceConfig, ipv6RouteConfig } from './commands-ipv6';
 import { daiInterfaceConfig } from '../switching/arp-inspection';
+import { TRAFFIC_CLASSES, stormLevelConfig } from '../switching/storm-control';
 
 /** Formatters for IOS show commands and ping/traceroute output. Pure functions of engine state. */
 
@@ -189,6 +190,8 @@ export function runningConfig(d: Device & IpDevice): string {
     if (tz.length) out.push(...tz, '!');
     const discovery = [...(ios.discovery.cdpEnabled ? [] : ['no cdp run']), ...(ios.discovery.lldpEnabled ? ['lldp run'] : [])];
     if (discovery.length) out.push(...discovery, '!');
+    const ftp = [...(ios.ftpLogin.username ? [`ip ftp username ${ios.ftpLogin.username}`] : []), ...(ios.ftpLogin.password ? [`ip ftp password ${ios.ftpLogin.password}`] : [])];
+    if (ftp.length) out.push(...ftp, '!');
   }
   if (d instanceof Router && d.dhcpRelayTrustAll) out.push('ip dhcp relay information trust-all', '!');
   if (d instanceof Switch && (d.snooping.vlans.size || d.snooping.enabled || !d.snooping.option82)) {
@@ -205,7 +208,10 @@ export function runningConfig(d: Device & IpDevice): string {
       ...(d.errRecovery.interval !== 300 ? [`errdisable recovery interval ${d.errRecovery.interval}`] : []),
     ];
     if (l2.length) out.push(...l2, '!');
+    if (d.mlsQos) out.push('mls qos', '!');
+    for (const p of d.raGuardPolicies.values()) if (p.name !== 'default') out.push(`ipv6 nd raguard policy ${p.name}`, ` device-role ${p.role}`, '!');
   }
+  if (d instanceof Router) out.push(...d.qos.config());
   if (d instanceof Router && d.ipv6Routing) out.push('ipv6 unicast-routing', '!');
   if (d instanceof Switch) {
     const stp = d.stp;
@@ -271,6 +277,11 @@ export function runningConfig(d: Device & IpDevice): string {
       if (i.dhcpSnooping?.trust) out.push(' ip dhcp snooping trust');
       out.push(...daiInterfaceConfig(i));
       if (i.sourceGuard) out.push(` ip verify source${i.sourceGuard === 'ip-mac' ? ' port-security' : ''}`);
+      if (i.qosTrust) out.push(` mls qos trust ${i.qosTrust}`);
+      if (i.raGuard) out.push(` ipv6 nd raguard attach-policy${i.raGuard === 'default' ? '' : ` ${i.raGuard}`}`);
+      const sc = i.stormControl;
+      for (const cls of TRAFFIC_CLASSES) if (sc?.[cls]) out.push(stormLevelConfig(cls, sc[cls]));
+      if (sc?.action) out.push(` storm-control action ${sc.action}`);
     } else {
       out.push(i.dhcpClient ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip.address} ${prefixToMask(i.ip.prefix)}` : ' no ip address');
       out.push(...ipv6InterfaceConfig(i));
@@ -279,6 +290,8 @@ export function runningConfig(d: Device & IpDevice): string {
     if (i.accessGroup?.in) out.push(` ip access-group ${i.accessGroup.in} in`);
     if (i.accessGroup?.out) out.push(` ip access-group ${i.accessGroup.out} out`);
     if (i.nat) out.push(` ip nat ${i.nat}`);
+    if (i.servicePolicy?.input) out.push(` service-policy input ${i.servicePolicy.input}`);
+    if (i.servicePolicy?.output) out.push(` service-policy output ${i.servicePolicy.output}`);
     if (i.bandwidth) out.push(` bandwidth ${i.bandwidth}`);
     const o = i.ospf;
     if (o?.process) out.push(` ip ospf ${o.process.pid} area ${o.process.area}`);
@@ -297,6 +310,19 @@ export function runningConfig(d: Device & IpDevice): string {
         if (g.preempt) out.push(` standby${n} preempt`);
         for (const t of g.tracks) out.push(` standby${n} track ${t.iface}${t.decrement !== 10 ? ` ${t.decrement}` : ''}`);
       }
+    }
+    for (const g of i.vrrp ?? []) {
+      if (g.description) out.push(` vrrp ${g.group} description ${g.description}`);
+      if (g.vip) out.push(` vrrp ${g.group} ip ${g.vip}`);
+      if (g.priority !== 100) out.push(` vrrp ${g.group} priority ${g.priority}`);
+      if (!g.preempt) out.push(` no vrrp ${g.group} preempt`);
+    }
+    for (const g of i.glbp ?? []) {
+      out.push(` glbp ${g.group} ip${g.vip ? ` ${g.vip}` : ''}`);
+      if (g.priority !== 100) out.push(` glbp ${g.group} priority ${g.priority}`);
+      if (g.preempt) out.push(` glbp ${g.group} preempt`);
+      if (g.weighting !== 100) out.push(` glbp ${g.group} weighting ${g.weighting}`);
+      if (g.loadBalancing !== 'round-robin') out.push(` glbp ${g.group} load-balancing ${g.loadBalancing}`);
     }
     if (i.cdp === false) out.push(' no cdp enable');
     if (i.lldp?.transmit === false) out.push(' no lldp transmit');

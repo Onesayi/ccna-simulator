@@ -92,7 +92,7 @@ describe('packet capture', () => {
     ]);
     expect(layers[0]![0]!.fields[2]).toEqual(['Type', 'IPv4 (0x0800)']);
     expect(layers[1]![0]!.fields[2]).toEqual(['Type', '802.1Q Virtual LAN (0x8100)']);
-    const ttl = (l: typeof layers[number]) => l.find((x) => x.title.startsWith('Internet Protocol'))!.fields[0]![1];
+    const ttl = (l: typeof layers[number]) => l.find((x) => x.title.startsWith('Internet Protocol'))!.fields.find((f) => f[0] === 'Time to Live')![1];
     expect(layers.map(ttl)).toEqual(['128', '128', '127', '126']);
   });
 

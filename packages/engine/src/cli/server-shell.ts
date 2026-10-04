@@ -22,6 +22,8 @@ const SERVER_HELP = `Server commands (the PC commands work too: ping, traceroute
   curl -k -u <user>:<pw> https://<ip>/restconf/data/<path>   RESTCONF GET
   curl -k -u <user>:<pw> -X PATCH -d '<json>' https://<ip>/restconf/data/<path>
   ansible-playbook -i <inventory> <playbook.yml>        Run a playbook
+  adduser <name> <password> | deluser <name>            File server account (opens FTP 21, SCP/SFTP 22)
+  cat /var/log/xferlog                                  Files sent and received (TFTP is always on)
   ls | cat <file>                                       Files on the server
   cat > <file> <<EOF ... EOF                            Write a file (or use the Files tab)`;
 
@@ -113,6 +115,16 @@ export class ServerShell extends PcShell {
         return this.snmp(cmd, rest);
       case 'aaa':
         return this.aaa(rest);
+      case 'adduser':
+      case 'useradd': {
+        const [name, password] = rest;
+        if (!name || !password) return `usage: ${cmd} <name> <password>`;
+        this.server.fileUsers.set(name, password);
+        return `User ${name} added. FTP (21) and SSH/SCP/SFTP (22) are open.`;
+      }
+      case 'deluser':
+      case 'userdel':
+        return this.server.fileUsers.delete(rest[0] ?? '') ? `User ${rest[0]} removed.` : `${cmd}: user '${rest[0] ?? ''}' does not exist`;
       case 'ls':
         return [...this.server.files.keys()].sort().join('  ');
       case 'cat':
@@ -153,6 +165,7 @@ export class ServerShell extends PcShell {
     if (!path) return 'cat: missing operand';
     if (path === '/var/log/snmptrapd.log') return this.server.trapLog.join('\n');
     if (path === '/var/log/aaa.log') return this.server.aaa.log.join('\n');
+    if (path === '/var/log/xferlog') return this.server.transferLog.join('\n');
     const f = this.server.files.get(path.replace(/^(\/root\/|\.\/)/, ''));
     return f ?? `cat: ${path}: No such file or directory`;
   }

@@ -34,6 +34,12 @@ export abstract class IosDevice extends IpDevice {
   abstract readonly platform: string;
   /** The software version line in `show cdp neighbors detail`. */
   abstract readonly software: string;
+  /** Files copied to flash, by name (the IOS image is listed separately). */
+  readonly flash = new Map<string, string>();
+  /** The saved configuration, once `copy running-config startup-config` or `write memory` ran. */
+  startupConfig?: string;
+  /** `ip ftp username` and `ip ftp password`: the FTP login `copy` uses when the URL has none. */
+  readonly ftpLogin: { username?: string; password?: string } = {};
   /** `service timestamps log ...`: prefix console messages with the time. Off unless configured. */
   logTimestamps?: { kind: 'uptime' | 'datetime'; msec: boolean; localtime: boolean; showTimezone: boolean };
   /** Native VLAN mismatches already logged, so CDP does not repeat itself every round. */
@@ -204,22 +210,30 @@ export abstract class IosDevice extends IpDevice {
 
   // ---------------------------------------------------------------- SNMP traps
 
-  /** Sends a linkUp or linkDown trap to every trap host. */
-  private sendLinkTrap(i: Interface, up: boolean): void {
-    const index = this.interfaces.indexOf(i) + 1;
+  /** Sends a trap (sysUpTime, the trap OID, then `varbinds`) to every trap host. */
+  protected sendTrap(trapOid: string, extra: SnmpMessage['varbinds']): void {
+    if (!this.snmp.trapsEnabled) return;
     const varbinds: SnmpMessage['varbinds'] = [
       { oid: '1.3.6.1.2.1.1.3.0', type: 'Timeticks', value: Math.floor(this.now / 10) },
-      { oid: '1.3.6.1.6.3.1.1.4.1.0', type: 'OID', value: up ? '1.3.6.1.6.3.1.1.5.4' : '1.3.6.1.6.3.1.1.5.3' },
-      { oid: `1.3.6.1.2.1.2.2.1.1.${index}`, type: 'INTEGER', value: index },
-      { oid: `1.3.6.1.2.1.2.2.1.2.${index}`, type: 'STRING', value: i.name },
-      { oid: `1.3.6.1.2.1.2.2.1.7.${index}`, type: 'INTEGER', value: i.adminUp ? 1 : 2 },
-      { oid: `1.3.6.1.2.1.2.2.1.8.${index}`, type: 'INTEGER', value: up ? 1 : 2 },
+      { oid: '1.3.6.1.6.3.1.1.4.1.0', type: 'OID', value: trapOid },
+      ...extra,
     ];
     for (const h of this.snmp.hosts) {
       const security = h.version === '3' ? { user: h.name, ...(this.snmp.userKeys(h.name) ?? { level: 'noAuthNoPriv' as const }) } : { community: h.name };
       const snmp: SnmpMessage = { version: h.version, pdu: 'trap', requestId: ++trapRequestId, varbinds, ...security };
       if (this.originate(h.address, (src) => ({ kind: 'udp', src, dst: h.address, ttl: 255, srcPort: 161, dstPort: 162, snmp }))) this.snmp.stats.traps++;
     }
+  }
+
+  /** Sends a linkUp or linkDown trap to every trap host. */
+  private sendLinkTrap(i: Interface, up: boolean): void {
+    const index = this.interfaces.indexOf(i) + 1;
+    this.sendTrap(up ? '1.3.6.1.6.3.1.1.5.4' : '1.3.6.1.6.3.1.1.5.3', [
+      { oid: `1.3.6.1.2.1.2.2.1.1.${index}`, type: 'INTEGER', value: index },
+      { oid: `1.3.6.1.2.1.2.2.1.2.${index}`, type: 'STRING', value: i.name },
+      { oid: `1.3.6.1.2.1.2.2.1.7.${index}`, type: 'INTEGER', value: i.adminUp ? 1 : 2 },
+      { oid: `1.3.6.1.2.1.2.2.1.8.${index}`, type: 'INTEGER', value: up ? 1 : 2 },
+    ]);
   }
 
   /** Compares each interface's line protocol with the last round and traps the changes. */

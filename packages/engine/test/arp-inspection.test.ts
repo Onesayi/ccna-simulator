@@ -367,7 +367,7 @@ describe('err-disable recovery', () => {
       errdisable recovery cause all
       no errdisable recovery cause bpduguard
       no errdisable recovery interval`);
-    expect([...sw.errRecovery.causes].sort()).toEqual(['arp-inspection', 'channel-misconfig', 'dhcp-rate-limit', 'link-flap', 'psecure-violation']);
+    expect([...sw.errRecovery.causes].sort()).toEqual(['arp-inspection', 'channel-misconfig', 'dhcp-rate-limit', 'link-flap', 'psecure-violation', 'storm-control']);
     expect(sw.errRecovery.interval).toBe(300);
     expect(() => ios(sw, 'conf t\nerrdisable recovery cause sunspots')).toThrow(/Invalid input/);
   });

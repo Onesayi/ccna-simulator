@@ -2,7 +2,8 @@ import { isValidIp } from '../core/addressing';
 import type { Device, Interface } from '../devices/device';
 import { IpDevice } from '../devices/ip-device';
 import { Router } from '../devices/router';
-import { Switch } from '../devices/switch';
+import { Switch, type RaGuardPolicy } from '../devices/switch';
+import type { ClassMap, PolicyClass, PolicyMap } from '../services/qos';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
 import type { ArpAcl } from '../switching/arp-inspection';
@@ -30,7 +31,11 @@ export type Mode =
   | 'config-radius-server'
   | 'config-server-tacacs'
   | 'config-sg-radius'
-  | 'config-sg-tacacs+';
+  | 'config-sg-tacacs+'
+  | 'config-ra-guard'
+  | 'config-cmap'
+  | 'config-pmap'
+  | 'config-pmap-c';
 
 /** The parts of a CLI session that commands read and change. */
 export interface Session {
@@ -51,6 +56,12 @@ export interface Session {
   currentAaaServer?: AaaServer;
   /** `aaa group server radius|tacacs+ <name>`. */
   currentAaaGroup?: AaaGroup;
+  /** `ipv6 nd raguard policy <name>`. */
+  currentRaGuard?: RaGuardPolicy;
+  /** `class-map <name>`, `policy-map <name>` and a `class` inside it. */
+  currentClassMap?: ClassMap;
+  currentPolicyMap?: PolicyMap;
+  currentPolicyClass?: PolicyClass;
   /** Questions the session is waiting on (`Password:`) and the telnet or SSH session it opened. */
   readonly io: Interaction;
   /** True for a telnet or SSH session, false on the console. */
@@ -90,6 +101,10 @@ export const CONFIG_MODES: Mode[] = [
   'config-server-tacacs',
   'config-sg-radius',
   'config-sg-tacacs+',
+  'config-ra-guard',
+  'config-cmap',
+  'config-pmap',
+  'config-pmap-c',
 ];
 export const IF_MODES: Mode[] = ['config-if', 'config-if-range', 'config-subif'];
 /** Switchport commands: one interface, or a range of them. */
