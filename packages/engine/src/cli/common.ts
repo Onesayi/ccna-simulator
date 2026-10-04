@@ -8,6 +8,7 @@ import type { Acl } from '../services/acl';
 import type { ArpAcl } from '../switching/arp-inspection';
 import type { DhcpPool } from '../services/dhcp';
 import type { LineConfig } from '../services/management';
+import type { AaaGroup, AaaServer } from '../services/aaa';
 import { IosDevice } from '../devices/ios-device';
 import type { Interaction, Shell } from './remote';
 
@@ -25,7 +26,11 @@ export type Mode =
   | 'config-std-nacl'
   | 'config-ext-nacl'
   | 'config-arp-nacl'
-  | 'config-line';
+  | 'config-line'
+  | 'config-radius-server'
+  | 'config-server-tacacs'
+  | 'config-sg-radius'
+  | 'config-sg-tacacs+';
 
 /** The parts of a CLI session that commands read and change. */
 export interface Session {
@@ -42,6 +47,10 @@ export interface Session {
   currentArpAcl?: ArpAcl;
   /** `line vty` or `line con`. */
   currentLine?: LineConfig;
+  /** `radius server <name>` or `tacacs server <name>`. */
+  currentAaaServer?: AaaServer;
+  /** `aaa group server radius|tacacs+ <name>`. */
+  currentAaaGroup?: AaaGroup;
   /** Questions the session is waiting on (`Password:`) and the telnet or SSH session it opened. */
   readonly io: Interaction;
   /** True for a telnet or SSH session, false on the console. */
@@ -50,6 +59,8 @@ export interface Session {
   closed: boolean;
   /** Opens a session on another device, for telnet and SSH. */
   spawn(device: IosDevice, privilege: number): Shell;
+  /** Ends a console EXEC session: back to user EXEC, or to the login prompt when the console has one. */
+  logOut(): string | void;
 }
 
 export interface Command {
@@ -63,7 +74,23 @@ export interface Command {
   run: (s: Session, args: string[]) => string | void;
 }
 
-export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl', 'config-arp-nacl', 'config-line'];
+export const CONFIG_MODES: Mode[] = [
+  'config',
+  'config-if',
+  'config-if-range',
+  'config-subif',
+  'config-vlan',
+  'config-router',
+  'dhcp-config',
+  'config-std-nacl',
+  'config-ext-nacl',
+  'config-arp-nacl',
+  'config-line',
+  'config-radius-server',
+  'config-server-tacacs',
+  'config-sg-radius',
+  'config-sg-tacacs+',
+];
 export const IF_MODES: Mode[] = ['config-if', 'config-if-range', 'config-subif'];
 /** Switchport commands: one interface, or a range of them. */
 export const L2_IF_MODES: Mode[] = ['config-if', 'config-if-range'];

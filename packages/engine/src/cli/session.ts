@@ -9,8 +9,11 @@ import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
 import type { ArpAcl } from '../switching/arp-inspection';
 import type { DhcpPool } from '../services/dhcp';
-import type { IosDevice } from '../devices/ios-device';
+import { IosDevice } from '../devices/ios-device';
 import type { LineConfig } from '../services/management';
+import type { AaaGroup, AaaServer } from '../services/aaa';
+import { AAA_COMMANDS } from './commands-aaa';
+import { SNMP_COMMANDS } from './commands-snmp';
 import { MANAGEMENT_COMMANDS } from './commands-management';
 import { HSRP_COMMANDS } from './commands-hsrp';
 import { Interaction, type Shell } from './remote';
@@ -52,6 +55,10 @@ const PROMPT_SUFFIX: Record<Mode, string> = {
   'config-ext-nacl': '(config-ext-nacl)#',
   'config-arp-nacl': '(config-arp-nacl)#',
   'config-line': '(config-line)#',
+  'config-radius-server': '(config-radius-server)#',
+  'config-server-tacacs': '(config-server-tacacs)#',
+  'config-sg-radius': '(config-sg-radius)#',
+  'config-sg-tacacs+': '(config-sg-tacacs+)#',
 };
 
 export interface CliOptions {
@@ -59,6 +66,8 @@ export interface CliOptions {
   remote?: boolean;
   /** Privilege 15 users log straight into privileged EXEC. */
   privilege?: number;
+  /** Skips the console login, for scripts that configure a device rather than a person at the console. */
+  loggedIn?: boolean;
 }
 
 /**
@@ -75,6 +84,8 @@ export class CliSession implements Shell, Session {
   currentAcl?: Acl;
   currentArpAcl?: ArpAcl;
   currentLine?: LineConfig;
+  currentAaaServer?: AaaServer;
+  currentAaaGroup?: AaaGroup;
   readonly io = new Interaction();
   readonly remote: boolean;
   closed = false;
@@ -85,6 +96,39 @@ export class CliSession implements Shell, Session {
   ) {
     this.remote = options.remote ?? false;
     if ((options.privilege ?? 1) >= 15) this.mode = 'privileged';
+    if (!this.remote && !options.loggedIn && device instanceof IosDevice && device.consoleLoginRequired) this.consoleLogin(device);
+  }
+
+  /** Asks for console credentials; the session gets a prompt only once they check out. */
+  private consoleLogin(d: IosDevice): void {
+    this.mode = 'user';
+    const steps = d.loginPrompts('console', 'console');
+    const finish = (user: string | undefined, pw: string): string => {
+      const r = d.login('console', 'console', user, pw);
+      if (!r.ok) {
+        this.consoleLogin(d);
+        return r.reason;
+      }
+      if (r.privilege >= 15) this.mode = 'privileged';
+      return '';
+    };
+    const askPassword = (user: string | undefined) => this.io.ask('Password: ', (pw) => finish(user, pw), true);
+    if (steps[0] === 'username') {
+      this.io.ask('Username: ', (user) => {
+        askPassword(user);
+        return '';
+      });
+    } else askPassword(undefined);
+  }
+
+  /** `exit` or `logout` on the console: back to the login prompt if one is configured. */
+  logOut(): string | void {
+    const d = this.device;
+    this.mode = 'user';
+    if (!(d instanceof IosDevice) || !d.consoleLoginRequired) return;
+    if (d.aaa.newModel) d.aaa.account('stop', undefined);
+    this.consoleLogin(d);
+    return `\n${d.hostname} con0 is now available\n\n\nUser Access Verification\n`;
   }
 
   get prompt(): string {
@@ -304,11 +348,11 @@ const COMMANDS: Command[] = [
     if (s.mode !== 'config' && CONFIG_MODES.includes(s.mode)) s.mode = 'config';
     else if (s.mode === 'config') s.mode = 'privileged';
     else if (s.remote) s.closed = true;
-    else s.mode = 'user';
+    else return s.logOut();
   } },
   { syntax: 'logout', modes: EXEC, help: 'Exit from the EXEC', run: (s) => {
     if (s.remote) s.closed = true;
-    else s.mode = 'user';
+    else return s.logOut();
   } },
   { syntax: 'end', modes: CONFIG_MODES, help: 'Exit to privileged EXEC mode', run: (s) => void (s.mode = 'privileged') },
   { syntax: 'hostname <name>', modes: ['config'], help: 'Set system name', run: (s, [name]) => {
@@ -478,6 +522,8 @@ const COMMANDS: Command[] = [
   ...MANAGEMENT_COMMANDS,
   ...HSRP_COMMANDS,
   ...L2_SECURITY_COMMANDS,
+  ...AAA_COMMANDS,
+  ...SNMP_COMMANDS,
 ];
 
 function target(dst: string): string {

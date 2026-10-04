@@ -47,7 +47,7 @@ export class PcShell implements Shell {
     return out;
   }
 
-  private run(line: string): string {
+  protected run(line: string): string {
     const [cmd = '', ...args] = line.trim().split(/\s+/);
     switch (cmd.toLowerCase()) {
       case '':
@@ -187,7 +187,7 @@ export class PcShell implements Shell {
     return formatWindowsTracert(result);
   }
 
-  private connect(dst: string, port: number) {
+  protected connect(dst: string, port: number) {
     const result = this.pc.connect(dst, port);
     this.pc.network?.run();
     return result;
@@ -215,7 +215,7 @@ export class PcShell implements Shell {
     return beginLogin(this.io, this.pc, host, protocol, user, (device, privilege) => new CliSession(device, { remote: true, privilege }));
   }
 
-  private curl(args: string[]): string {
+  protected curl(args: string[]): string {
     const m = /^(?:(https?):\/\/)?([\d.]+)(?::(\d+))?\/?$/i.exec(args[0] ?? '');
     if (!m || !isValidIp(m[2]!)) return `curl: (3) URL using bad/illegal format or missing URL`;
     const host = m[2]!;
@@ -297,9 +297,4 @@ export function formatWindowsTracert(t: TracerouteResult): string {
   }
   lines.push('', 'Trace complete.', '');
   return lines.join('\n');
-}
-
-/** The right terminal for a device: a command prompt for PCs, the IOS CLI for everything else. */
-export function createShell(device: Device): Shell {
-  return device instanceof Pc ? new PcShell(device) : new CliSession(device);
 }

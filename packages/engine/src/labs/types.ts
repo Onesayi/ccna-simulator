@@ -33,8 +33,10 @@ export interface LabDeviceSpec {
   gateway6?: string;
   /** PCs only: a fixed MAC address, for labs whose solution has to name it (ARP ACLs, static bindings). */
   mac?: string;
-  /** IOS commands run from privileged EXEC before the lab starts. */
+  /** Commands run before the lab starts: IOS from privileged EXEC, or the device's own shell (servers, controllers). */
   config?: string;
+  /** Servers only: files to put on the server (inventories, playbooks), by name. */
+  files?: Record<string, string>;
 }
 
 export interface LabTopology {

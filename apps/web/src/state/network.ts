@@ -9,7 +9,7 @@ export interface XY {
 
 /** Runs IOS commands from privileged EXEC, used to script the demo topology. */
 function script(device: Device, commands: string): void {
-  const cli = new CliSession(device);
+  const cli = new CliSession(device, { loggedIn: true });
   cli.execute('enable');
   for (const line of commands.trim().split('\n')) cli.execute(line.trim());
 }

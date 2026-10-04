@@ -17,7 +17,7 @@ export interface TraceEntry {
   /** Frame number, counting from 1 since the topology was built. Keeps counting when old entries are trimmed. */
   no: number;
   at: number;
-  /** The cable the frame crossed. */
+  /** The cable the frame crossed, or `air:<ap id>` for a wireless hop. */
   link: string;
   from: string; // "SW1 Gi0/1"
   to: string;
@@ -86,9 +86,24 @@ export class Topology {
     if (!link || !from.isUp) return;
     const to = link.a === from ? link.b : link.a;
     if (!to.isUp) return;
+    this.deliver(from, to, link.id, frame);
+  }
+
+  /**
+   * Sends a frame over the air between two radios: a client and the AP it is associated with.
+   * There is no cable, so the AP names the channel; the capture panel shows it as `air:<ap id>`.
+   */
+  transmitAir(from: Interface, to: Interface, channel: string, frame: Frame): void {
+    if (!from.adminUp || !to.adminUp) return;
+    this.deliver(from, to, channel, frame);
+  }
+
+  private deliver(from: Interface, to: Interface, link: string, frame: Frame): void {
+    from.counters.out++;
     this.scheduler.schedule(LINK_DELAY_MS, `${from.fullName} -> ${to.fullName}`, () => {
-      this.trace.push({ no: ++this.framesSeen, at: this.scheduler.now, link: link.id, from: from.fullName, to: to.fullName, frame });
+      this.trace.push({ no: ++this.framesSeen, at: this.scheduler.now, link, from: from.fullName, to: to.fullName, frame });
       if (this.trace.length > TRACE_LIMIT + 1000) this.trace.splice(0, this.trace.length - TRACE_LIMIT);
+      to.counters.in++;
       to.device.receive(to, frame);
     });
   }

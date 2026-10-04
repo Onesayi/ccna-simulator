@@ -12,8 +12,12 @@ export type SwitchportMode = 'access' | 'trunk';
  * - `svi`: a switch virtual interface (Vlan10), the switch's own Layer 3 presence in a VLAN.
  * - `loopback`: a virtual interface that is always up once enabled.
  * - `port-channel`: an EtherChannel (Port-channel1), up while at least one member port is bundled.
+ * - `radio`: an 802.11 radio. It takes no cable; a client's radio is up while it is associated.
  */
-export type InterfaceKind = 'physical' | 'subinterface' | 'svi' | 'loopback' | 'port-channel';
+export type InterfaceKind = 'physical' | 'subinterface' | 'svi' | 'loopback' | 'port-channel' | 'radio';
+
+/** Every kind of device the simulator can build. */
+export type DeviceKind = 'pc' | 'server' | 'switch' | 'router' | 'wlc' | 'ap';
 
 /** Why a port was err-disabled. `shutdown` then `no shutdown` brings it back. */
 export type ErrDisableReason = 'bpduguard' | 'psecure-violation' | 'arp-inspection';
@@ -79,6 +83,8 @@ export interface Interface {
   link?: Link;
   /** Line protocol state. Physical ports need a cable; virtual interfaces follow their own rules. */
   readonly isUp: boolean;
+  /** Frames sent and received, for SNMP's ifInUcastPkts and ifOutUcastPkts. */
+  counters: { in: number; out: number };
   // Layer 3 (routers, PCs, SVIs)
   ip?: { address: Ipv4Address; prefix: number };
   // Sub-interfaces
@@ -169,13 +175,14 @@ export function shortName(name: string): string {
     .replace(/^FastEthernet/, 'Fa')
     .replace(/^Ethernet/, 'Eth')
     .replace(/^Loopback/, 'Lo')
-    .replace(/^Port-channel/, 'Po');
+    .replace(/^Port-channel/, 'Po')
+    .replace(/^Wireless/, 'Wi');
 }
 
 let deviceCounter = 0;
 
 export abstract class Device {
-  abstract readonly kind: 'pc' | 'switch' | 'router';
+  abstract readonly kind: DeviceKind;
   /** Stable identity: survives `hostname` changes, so the UI and topology can key on it. */
   readonly id = `dev${++deviceCounter}`;
   readonly interfaces: Interface[] = [];
@@ -208,6 +215,7 @@ export abstract class Device {
       get isUp() {
         return upRule(this);
       },
+      counters: { in: 0, out: 0 },
       mode: 'access',
       accessVlan: 1,
       allowedVlans: 'all',

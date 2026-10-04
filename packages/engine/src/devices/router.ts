@@ -193,6 +193,11 @@ export class Router extends IosDevice {
 
   // ---------------------------------------------------------------- ACLs and NAT
 
+  protected override standardAclPermits(name: string, src: Ipv4Address): boolean | undefined {
+    const acl = this.acls.get(name);
+    return acl ? evaluateAcl(acl, { kind: 'udp', src, dst: '0.0.0.0', ttl: 255, srcPort: 0, dstPort: 161 }) === 'permit' : undefined;
+  }
+
   protected override permits(iface: Interface, dir: 'in' | 'out', p: IpPacket): boolean {
     const name = iface.accessGroup?.[dir];
     const acl = name ? this.acls.get(name) : undefined;

@@ -3,9 +3,10 @@ import { parseIpv6Prefix } from '../core/ipv6';
 import { Topology } from '../core/topology';
 import type { Device } from '../devices/device';
 import { Pc } from '../devices/pc';
-import { Router } from '../devices/router';
-import { Switch } from '../devices/switch';
-import { createShell } from '../cli/pc-shell';
+import { createShell } from '../cli/shells';
+import { createDevice } from '../devices/factory';
+import { IosDevice } from '../devices/ios-device';
+import { Server } from '../devices/server';
 import { CliSession } from '../cli/session';
 import { evaluate } from './checks';
 import { PROBE_CHECKS, type LabDefinition, type Objective } from './types';
@@ -29,14 +30,21 @@ function endpoint(spec: string): [string, string] {
   return [spec.slice(0, at), spec.slice(at + 1)];
 }
 
-/** Runs IOS commands from privileged EXEC and throws on the first error, so a broken lab fails its tests. */
+/** Lines that mean a command was refused, on any of the shells. */
+export const SHELL_ERROR = /^(% |Invalid Command|Incorrect input|Error|usage:|ERROR!)/;
+
+/**
+ * Runs a device's starting configuration and throws on the first error, so a broken lab fails its
+ * tests. IOS devices start from privileged EXEC; other devices take their own shell's commands.
+ */
 function configure(device: Device, commands: string): void {
-  const cli = new CliSession(device);
-  cli.execute('enable');
+  const ios = device instanceof IosDevice;
+  const shell = ios ? new CliSession(device, { loggedIn: true }) : createShell(device);
+  if (ios) shell.execute('enable');
   for (const raw of commands.trim().split('\n')) {
     const line = raw.trim();
-    const out = cli.execute(line);
-    if (out.startsWith('% ') && !out.startsWith('% Access VLAN')) throw new Error(`${device.hostname}: "${line}" -> ${out}`);
+    const out = shell.execute(line);
+    if (SHELL_ERROR.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${device.hostname}: "${line}" -> ${out}`);
   }
 }
 
@@ -52,7 +60,7 @@ export class LabRun {
 
   constructor(readonly lab: LabDefinition) {
     for (const spec of lab.topology.devices) {
-      const d = spec.kind === 'router' ? new Router(spec.hostname) : spec.kind === 'switch' ? new Switch(spec.hostname) : new Pc(spec.hostname);
+      const d = createDevice(spec.kind, spec.hostname);
       this.topology.add(d);
       this.byLabName.set(spec.hostname.toLowerCase(), d);
       this.positions.set(d.id, { x: spec.at[0], y: spec.at[1] });
@@ -73,6 +81,7 @@ export class LabRun {
         const { address, prefix } = parseIpv6Prefix(spec.ipv6);
         d.configureIpv6(address, prefix, spec.gateway6);
       }
+      if (d instanceof Server) for (const [path, text] of Object.entries(spec.files ?? {})) d.files.set(path, text.replace(/^\n/, ''));
       if (spec.config) configure(d, spec.config);
     }
     // DHCP and SLAAC clients ask once the network is built and spanning tree has settled, as if just powered on.
@@ -119,7 +128,7 @@ export class LabRun {
       const shell = createShell(this.device(name));
       for (const line of commands.trim().split('\n')) {
         const out = shell.execute(line.trim());
-        if (/^% |^Invalid Command/.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${name}: "${line.trim()}" -> ${out}`);
+        if (SHELL_ERROR.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${name}: "${line.trim()}" -> ${out}`);
       }
     }
     this.lab.objectives.forEach((o, i) => {

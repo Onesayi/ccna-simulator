@@ -12,7 +12,7 @@ export type { PingResult } from './ip-device';
  * clients and a web server on ports 80 and 443 (so it can stand in for a server in ACL labs).
  */
 export class Pc extends IpDevice {
-  readonly kind = 'pc' as const;
+  readonly kind: 'pc' | 'server' = 'pc';
   readonly nic: Interface;
   protected override readonly queueDuringArp = true;
   protected override readonly initialTtl = 128;
