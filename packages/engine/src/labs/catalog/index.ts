@@ -1,6 +1,9 @@
 import type { LabDefinition } from '../types';
 import { discoveryLabs } from './discovery';
 import { fhrpLabs } from './fhrp';
+import { fileLabs } from './files';
+import { l2ProtectionLabs } from './l2-protection';
+import { qosLabs } from './qos';
 import { infrastructureLabs } from './infrastructure';
 import { ipv6Labs } from './ipv6';
 import { securityLabs } from './security';
@@ -40,6 +43,8 @@ const ORDER = [
   'ospf-troubleshoot',
   'hsrp-basic',
   'hsrp-troubleshoot',
+  'vrrp-basic',
+  'glbp-load-balancing',
   'dhcp-server',
   'dhcp-relay',
   'nat-pat',
@@ -54,12 +59,18 @@ const ORDER = [
   'dynamic-arp-inspection',
   'dai-arp-acl',
   'ip-source-guard',
+  'storm-control',
+  'ra-guard',
+  'qos-marking',
+  'qos-trust-boundary',
   'wlan-wpa2-psk',
   'ap-join-option43',
   'wireless-channels',
   'wlan-enterprise-guest',
   'wireless-troubleshoot',
   'ssh-remote-access',
+  'config-backup',
+  'ftp-restore',
   'aaa-tacacs',
   'aaa-radius-troubleshoot',
   'syslog-read',
@@ -74,7 +85,7 @@ const ORDER = [
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs, ...wirelessLabs, ...managementLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs, ...wirelessLabs, ...managementLabs, ...l2ProtectionLabs, ...qosLabs, ...fileLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),

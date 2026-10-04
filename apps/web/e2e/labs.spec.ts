@@ -6,7 +6,7 @@ const objective = (page: import('@playwright/test').Page, text: string) =>
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(56);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(64);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 

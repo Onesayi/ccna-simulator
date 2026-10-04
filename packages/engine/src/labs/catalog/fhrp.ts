@@ -75,7 +75,7 @@ const LINKS: [string, string][] = [
   ['SRV Eth0', 'CORE Gi0/2'],
 ];
 
-/** Domain 3.0: first hop redundancy with HSRP (blueprint 3.4). */
+/** Domain 3.0: first hop redundancy with HSRP, VRRP and GLBP (blueprint 3.4). */
 export const fhrpLabs: LabDefinition[] = [
   {
     id: 'hsrp-basic',
@@ -244,5 +244,168 @@ Find the faults with \`show standby brief\`, \`show standby\`, \`show logging\` 
       PC2: 'ipconfig 192.168.10.12 255.255.255.0 192.168.10.1',
     },
     debrief: 'Three classic HSRP mistakes: mismatched virtual IPs (the active router decides which address is live), no preempt (the better router waits politely), and hosts pointing at a real router address instead of the virtual one (no redundancy at all). `show standby brief` answers most questions: who is active, who is standby, and which virtual IP is in use.',
+  },
+  {
+    id: 'vrrp-basic',
+    title: 'Build the redundant gateway with the open standard',
+    domain: '3.0',
+    blueprint: ['3.4'],
+    kind: 'guided',
+    difficulty: 2,
+    summary: 'VRRP group 10 on two routers: a master, a backup, and preemption that is on by default.',
+    briefing: `This office is replacing its gateways with routers from more than one vendor, so the redundant gateway has to use **VRRP** (RFC 5798) instead of Cisco's HSRP. The PCs already use **192.168.10.1** as their gateway. Set up VRRP group **10** on Gi0/0 of R1 and R2:
+
+- Both routers: \`vrrp 10 ip 192.168.10.1\`
+- R1 is the master: priority **110**
+- R2 keeps the default priority (100) and becomes the backup
+
+VRRP preempts by default, so there is no \`preempt\` command to remember this time. Check with \`show vrrp brief\` and \`show vrrp\`, then ping the server from both PCs. Look at \`arp -a\` on a PC to see which MAC address answers for the gateway.`,
+    addressing: ADDRESSING.map((r) => (r.device === 'Virtual' ? { ...r, interface: 'VRRP group 10' } : r)),
+    topology: {
+      devices: [
+        { hostname: 'R1', kind: 'router', at: [100, 150], config: R1_BASE },
+        { hostname: 'R2', kind: 'router', at: [400, 150], config: R2_BASE },
+        ...OTHERS,
+        { hostname: 'PC2', kind: 'pc', at: [400, 450], ip: '192.168.10.12/24', gateway: '192.168.10.1' },
+      ],
+      links: LINKS,
+    },
+    objectives: [
+      {
+        text: 'R1 is the master for group 10 with priority 110',
+        check: { type: 'vrrp', device: 'R1', interface: 'Gi0/0', group: 10, vip: '192.168.10.1', priority: 110, state: 'Master' },
+        hint: 'On R1 Gi0/0: `vrrp 10 ip 192.168.10.1` and `vrrp 10 priority 110`.',
+      },
+      {
+        text: 'R2 is the backup for group 10',
+        check: { type: 'vrrp', device: 'R2', interface: 'Gi0/0', group: 10, vip: '192.168.10.1', priority: 100, state: 'Backup' },
+        hint: 'On R2 Gi0/0: `vrrp 10 ip 192.168.10.1`.',
+      },
+      { text: 'PC1 reaches the server', check: { type: 'ping', from: 'PC1', to: '172.16.0.10', expect: 'success' } },
+      { text: 'PC2 reaches the server', check: { type: 'ping', from: 'PC2', to: '172.16.0.10', expect: 'success' } },
+      {
+        text: 'The virtual MAC',
+        check: {
+          type: 'quiz',
+          question: 'Which MAC address answers ARP for 192.168.10.1 in VRRP group 10?',
+          options: ['0000.0c07.ac0a', '0000.5e00.010a', '0007.b400.0a01', 'The MAC of R1 Gi0/0'],
+          answer: 1,
+          explain: 'VRRP uses 0000.5e00.01XX with the group number in hex (10 = 0a). 0000.0c07.acXX is HSRPv1 and 0007.b4XX.XXYY is GLBP.',
+        },
+      },
+      {
+        text: 'Terminology',
+        check: {
+          type: 'quiz',
+          question: 'How do HSRP and VRRP differ?',
+          options: [
+            'VRRP is Cisco proprietary; HSRP is an open standard',
+            'VRRP calls the roles master and backup, preempts by default, and is an open standard',
+            'VRRP load-balances between all routers in the group',
+            'VRRP needs a separate virtual IP for each router',
+          ],
+          answer: 1,
+          explain: 'HSRP (Cisco) has active and standby routers and no preemption unless configured. VRRP (IETF) has a master and backups and preempts by default. Neither load-balances within one group; GLBP does.',
+        },
+      },
+    ],
+    solution: {
+      R1: `enable
+        conf t
+        interface g0/0
+        vrrp 10 ip 192.168.10.1
+        vrrp 10 priority 110
+        end`,
+      R2: `enable
+        conf t
+        interface g0/0
+        vrrp 10 ip 192.168.10.1
+        end`,
+    },
+    debrief: 'VRRP works like HSRP: the master owns a virtual IP and MAC (0000.5e00.01XX), sends advertisements to 224.0.0.18, and a backup takes over when they stop. The differences are worth remembering for the exam: it is an open standard, the roles are master and backup, preemption is on by default, and a router whose real address is the virtual IP becomes the "owner" with priority 255.',
+  },
+  {
+    id: 'glbp-load-balancing',
+    title: 'Share the load between both gateways',
+    domain: '3.0',
+    blueprint: ['3.4'],
+    kind: 'guided',
+    difficulty: 3,
+    summary: 'GLBP gives each PC a different virtual MAC, so both routers forward traffic at once.',
+    briefing: `With HSRP or VRRP one router forwards all the traffic while the other waits. **GLBP** (Gateway Load Balancing Protocol) keeps one virtual IP but hands out up to four virtual MACs, one per router, so both routers forward.
+
+Set up GLBP group **1** with virtual IP **192.168.10.1** on Gi0/0 of R1 and R2:
+
+- R1 is the active virtual gateway (AVG): priority **150** and \`glbp 1 preempt\`
+- R2 keeps the default priority (100)
+- Keep the default load balancing (round-robin): each ARP request for the gateway gets the next virtual MAC
+
+Check with \`show glbp brief\`: R1 should be Active for the group and both routers should be Active for one forwarder each. Then ping the server from both PCs and compare \`arp -a\` on PC1 and PC2.`,
+    addressing: ADDRESSING.map((r) => (r.device === 'Virtual' ? { ...r, interface: 'GLBP group 1' } : r)),
+    topology: {
+      devices: [
+        { hostname: 'R1', kind: 'router', at: [100, 150], config: R1_BASE },
+        { hostname: 'R2', kind: 'router', at: [400, 150], config: R2_BASE },
+        ...OTHERS,
+        { hostname: 'PC2', kind: 'pc', at: [400, 450], ip: '192.168.10.12/24', gateway: '192.168.10.1' },
+      ],
+      links: LINKS,
+    },
+    objectives: [
+      {
+        text: 'R1 is the AVG (priority 150, preempt)',
+        check: { type: 'glbp', device: 'R1', interface: 'Gi0/0', group: 1, vip: '192.168.10.1', priority: 150, preempt: true, state: 'Active' },
+        hint: 'On R1 Gi0/0: `glbp 1 ip 192.168.10.1`, `glbp 1 priority 150`, `glbp 1 preempt`.',
+      },
+      {
+        text: 'R2 is the standby AVG',
+        check: { type: 'glbp', device: 'R2', interface: 'Gi0/0', group: 1, state: 'Standby' },
+        hint: 'On R2 Gi0/0: `glbp 1 ip 192.168.10.1` (or just `glbp 1 ip`: it learns the address from the AVG).',
+      },
+      { text: 'R1 forwards for a virtual MAC', check: { type: 'glbp', device: 'R1', interface: 'Gi0/0', group: 1, forwarding: true } },
+      { text: 'R2 forwards for a virtual MAC too', check: { type: 'glbp', device: 'R2', interface: 'Gi0/0', group: 1, forwarding: true } },
+      { text: 'PC1 reaches the server', check: { type: 'ping', from: 'PC1', to: '172.16.0.10', expect: 'success' } },
+      { text: 'PC2 reaches the server', check: { type: 'ping', from: 'PC2', to: '172.16.0.10', expect: 'success' } },
+      {
+        text: 'Roles',
+        check: {
+          type: 'quiz',
+          question: 'In GLBP, which router answers the PCs\' ARP requests for the virtual IP?',
+          options: ['Every router in the group', 'The active virtual gateway (AVG)', 'The router with the lowest IP', 'Only the active virtual forwarder that owns forwarder 1'],
+          answer: 1,
+          explain: 'The AVG answers every ARP request for the virtual IP and decides which virtual MAC each host gets. Each router (including the AVG) is an active virtual forwarder (AVF) for the MAC it was given.',
+        },
+      },
+      {
+        text: 'Failure',
+        check: {
+          type: 'quiz',
+          question: 'R2 fails. What happens to the PCs that were given R2\'s virtual MAC?',
+          options: [
+            'They lose their gateway until their ARP entry times out',
+            'Another router (here R1) takes over forwarding for that virtual MAC, so they keep working',
+            'They must run ipconfig /renew',
+            'The AVG sends them a new virtual IP',
+          ],
+          answer: 1,
+          explain: 'GLBP is still a redundancy protocol: a surviving router takes over the dead forwarder\'s virtual MAC, so hosts never have to change their ARP entry.',
+        },
+      },
+    ],
+    solution: {
+      R1: `enable
+        conf t
+        interface g0/0
+        glbp 1 ip 192.168.10.1
+        glbp 1 priority 150
+        glbp 1 preempt
+        end`,
+      R2: `enable
+        conf t
+        interface g0/0
+        glbp 1 ip 192.168.10.1
+        end`,
+    },
+    debrief: 'GLBP elects one active virtual gateway (AVG) the same way HSRP elects an active router, but the AVG then gives each group member its own virtual MAC (0007.b4XX.XXYY, up to four) and spreads the hosts across them when it answers ARP. Load balancing can be round-robin (the default), weighted, or host-dependent (each host always gets the same MAC). HSRP and VRRP can only load-balance by running several groups with different gateways.',
   },
 ];

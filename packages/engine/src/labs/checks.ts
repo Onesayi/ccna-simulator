@@ -12,6 +12,7 @@ import { Server } from '../devices/server';
 import { LightweightAp } from '../devices/ap';
 import { WirelessController, wlanSecurity } from '../devices/wlc';
 import { formatMethods } from '../services/aaa';
+import { dscpName } from '../services/dscp';
 import type { Check } from './types';
 
 export interface CheckResult {
@@ -697,6 +698,141 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
         }
       }
       return rows.length >= 2 ? ok : fail('Fewer than two APs have joined');
+    }
+    case 'vrrp': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const st = r.vrrp.groups().find((g) => g.iface === i && g.config.group === check.group);
+      if (!st) return fail(`${i.name} has no VRRP group ${check.group}`);
+      if (check.vip && st.config.vip !== check.vip) return fail(`VRRP group ${check.group} on ${r.hostname} uses virtual IP ${st.config.vip ?? 'none'}`);
+      if (check.priority !== undefined && r.vrrp.priority(st) !== check.priority) return fail(`VRRP group ${check.group} on ${r.hostname} has priority ${r.vrrp.priority(st)}`);
+      if (check.state && st.state !== check.state) return fail(`${r.hostname} is ${st.state} for VRRP group ${check.group}`);
+      return ok;
+    }
+    case 'glbp': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const st = r.glbp.groups().find((g) => g.iface === i && g.config.group === check.group);
+      if (!st) return fail(`${i.name} has no GLBP group ${check.group}`);
+      if (check.vip && r.glbp.vip(st) !== check.vip) return fail(`GLBP group ${check.group} on ${r.hostname} uses virtual IP ${r.glbp.vip(st) ?? 'none'}`);
+      if (check.priority !== undefined && st.config.priority !== check.priority) return fail(`GLBP group ${check.group} on ${r.hostname} has priority ${st.config.priority}`);
+      if (check.preempt !== undefined && st.config.preempt !== check.preempt) return fail(`AVG preemption is ${st.config.preempt ? 'on' : 'off'} for GLBP group ${check.group} on ${r.hostname}`);
+      if (check.state && st.state !== check.state) return fail(`${r.hostname} is ${st.state} (AVG role) for GLBP group ${check.group}`);
+      if (check.forwarding && !r.glbp.owned(st).length) return fail(`${r.hostname} forwards for no virtual MAC in GLBP group ${check.group}`);
+      return ok;
+    }
+    case 'stormControl': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const level = i.stormControl?.[check.class];
+      if (!level) return fail(`${i.name} has no ${check.class} storm-control level`);
+      if (check.level !== undefined && (level.unit !== 'percent' || level.rising !== check.level)) return fail(`${i.name} limits ${check.class} to ${level.rising}${level.unit === 'pps' ? ' pps' : '%'}`);
+      if (check.action && i.stormControl?.action !== check.action) return fail(`${i.name} storm-control action is ${i.stormControl?.action ?? 'drop (the default)'}`);
+      return ok;
+    }
+    case 'stormProbe': {
+      const from = device(check.from);
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      if (!(from instanceof Pc)) throw new Error(`${from.hostname} is not a PC`);
+      const before = sw.storm.dropped(i);
+      from.flood('broadcast', 300);
+      from.network!.run();
+      const filtered = sw.storm.dropped(i) > before;
+      // Recover a port that storm control shut down, so the network is as the learner left it.
+      if (i.errDisabled === 'storm-control') i.errDisabled = undefined;
+      if (filtered === (check.expect === 'filtered')) return ok;
+      return fail(filtered ? `${sw.hostname} dropped part of the broadcast storm on ${i.name}` : `${sw.hostname} forwarded the whole broadcast storm from ${i.name}`);
+    }
+    case 'raGuard': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      if (!i.raGuard) return fail(`${i.name} has no RA guard policy`);
+      const policy = sw.raGuardPolicy(i);
+      if (check.role && policy?.role !== check.role) return fail(`${i.name} uses policy ${i.raGuard} with device-role ${policy?.role ?? 'host'}`);
+      return ok;
+    }
+    case 'rogueRa': {
+      const from = device(check.from);
+      const victim = device(check.victim);
+      if (!(from instanceof Pc) || !(victim instanceof Pc)) throw new Error('Rogue RA checks need two PCs');
+      const v6 = victim.nic.ipv6!;
+      const saved = { addresses: [...v6.addresses], gateway: victim.ipv6.gateway };
+      from.rogueRouterAdvert('2001:db8:bad::', 64);
+      from.network!.run();
+      const accepted = victim.ipv6.gateway !== saved.gateway || v6.addresses.length !== saved.addresses.length;
+      // Undo what the rogue advertisement did, so the network is as the learner left it.
+      v6.addresses = saved.addresses;
+      victim.ipv6.gateway = saved.gateway;
+      if (accepted === (check.expect === 'accepted')) return ok;
+      return fail(accepted ? `${victim.hostname} took ${from.hostname} as its IPv6 router` : `${victim.hostname} ignored the router advertisement`);
+    }
+    case 'fileOnServer': {
+      const d = device(check.device);
+      if (!(d instanceof Server)) throw new Error(`${d.hostname} is not a server`);
+      const f = d.files.get(check.file);
+      if (f === undefined) return fail(`${d.hostname} has no file ${check.file}`);
+      if (check.contains && !f.includes(check.contains)) return fail(`${check.file} on ${d.hostname} does not contain "${check.contains}"`);
+      // xferlog lines: protocol, client, direction (i = upload), size, "bytes", /file, user.
+      const uploaded = (l: string) => {
+        const [proto, , dir, , , path] = l.split(/\s+/);
+        return proto === check.via?.toUpperCase() && dir === 'i' && path === `/${check.file}`;
+      };
+      if (check.via && !d.transferLog.some(uploaded)) return fail(`${check.file} was not uploaded with ${check.via.toUpperCase()}`);
+      return ok;
+    }
+    case 'startupConfig': {
+      const d = iosOf(device(check.device));
+      if (d.startupConfig === undefined) return fail(`${d.hostname} has no saved configuration (startup-config is not present)`);
+      if (check.contains && !d.startupConfig.includes(check.contains)) return fail(`The saved configuration on ${d.hostname} does not contain "${check.contains}": save again`);
+      return ok;
+    }
+    case 'servicePolicy': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const attached = i.servicePolicy?.[check.direction];
+      if (attached === check.policy) return ok;
+      const other = i.servicePolicy?.[check.direction === 'input' ? 'output' : 'input'];
+      if (other === check.policy) return fail(`${check.policy} is attached to ${i.name} in the ${check.direction === 'input' ? 'output' : 'input'} direction`);
+      return fail(attached ? `${i.name} uses ${attached} for ${check.direction}` : `${i.name} has no ${check.direction} service policy`);
+    }
+    case 'qosClass': {
+      const r = routerOf(device(check.device));
+      const pm = r.qos.policyMaps.get(check.policy);
+      if (!pm) return fail(`Policy map ${check.policy} does not exist on ${r.hostname}`);
+      const c = pm.classes.find((x) => x.name === check.class);
+      if (!c) return fail(`Policy map ${check.policy} has no class ${check.class}`);
+      if (check.setDscp !== undefined && c.setDscp !== check.setDscp) return fail(`Class ${check.class} ${c.setDscp === undefined ? 'does not mark' : `marks ${dscpName(c.setDscp)}`}`);
+      if (check.priority && !c.priority) return fail(`Class ${check.class} has no priority queue`);
+      if (check.bandwidth && !c.bandwidth) return fail(`Class ${check.class} has no bandwidth guarantee`);
+      if (check.police && !c.police) return fail(`Class ${check.class} has no policer`);
+      return ok;
+    }
+    case 'qosTrust': {
+      const sw = switchOf(device(check.device));
+      if (!sw.mlsQos) return fail(`QoS is disabled on ${sw.hostname} (mls qos)`);
+      if (!check.interface) return ok;
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const trust = i.qosTrust ?? 'none';
+      return trust === (check.trust ?? 'dscp') ? ok : fail(`${i.name} trust state is ${trust === 'none' ? 'not trusted' : `trust ${trust}`}`);
+    }
+    case 'dscpReceived': {
+      const from = ipDevice(device(check.from));
+      const net = from.network!;
+      const start = net.trace.at(-1)?.no ?? 0;
+      const results = from.ping(check.to, 4);
+      net.run();
+      if (!results.some((r) => r.success)) return fail(`${from.hostname} cannot reach ${check.to}${describeFailure(results)}`);
+      const arrived = [...net.trace].reverse().find((e) => e.no > start && e.frame.payload.kind === 'icmp' && e.frame.payload.type === 'echo-request' && e.frame.payload.dst === check.to);
+      const dscp = arrived && arrived.frame.payload.kind === 'icmp' ? (arrived.frame.payload.dscp ?? 0) : 0;
+      return dscp === check.dscp ? ok : fail(`Pings from ${from.hostname} arrive marked ${dscpName(dscp)} (${dscp})`);
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');

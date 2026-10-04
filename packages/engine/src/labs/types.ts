@@ -39,8 +39,10 @@ export interface LabDeviceSpec {
   wireless?: boolean;
   /** Laptops only: a saved Wi-Fi profile, joined automatically once an AP beacons the SSID. */
   wifi?: { ssid: string; key?: string; username?: string; password?: string };
-  /** Servers only: files to put on the server (inventories, playbooks), by name. */
+  /** Servers only: files to put on the server (inventories, playbooks, config backups), by name. */
   files?: Record<string, string>;
+  /** PCs only: the DSCP value the PC marks its own traffic with (a softphone marks EF, 46). */
+  dscp?: number;
 }
 
 export interface LabTopology {
@@ -175,13 +177,37 @@ export type Check =
   | { type: 'wirelessClient'; device: string; ssid: string; network?: string; prefix?: number }
   /** No two joined APs use the same or (2.4 GHz) overlapping channels. */
   | { type: 'apChannels'; device: string; band: '2.4' | '5' }
+  /** A VRRP group on the interface, optionally in a state, with a virtual IP or priority. */
+  | { type: 'vrrp'; device: string; interface: string; group: number; state?: 'Master' | 'Backup'; vip?: string; priority?: number }
+  /** A GLBP group: the router's AVG role, settings, and with `forwarding`, that it is an active virtual forwarder. */
+  | { type: 'glbp'; device: string; interface: string; group: number; state?: 'Active' | 'Standby' | 'Listen'; vip?: string; priority?: number; preempt?: boolean; forwarding?: boolean }
+  /** A storm-control threshold for one traffic class on the port (percent), optionally with an action. */
+  | { type: 'stormControl'; device: string; interface: string; class: 'broadcast' | 'multicast' | 'unicast'; level?: number; action?: 'shutdown' | 'trap' }
+  /** `from` floods broadcasts for a second: `filtered` passes when the switch port drops part of the storm. */
+  | { type: 'stormProbe'; from: string; device: string; interface: string; expect: 'filtered' | 'forwarded' }
+  /** RA guard on the port, optionally with a policy of this device role. */
+  | { type: 'raGuard'; device: string; interface: string; role?: 'host' | 'router' }
+  /** `from` sends a rogue router advertisement; `blocked` passes when `victim` (a SLAAC host) ignores it. */
+  | { type: 'rogueRa'; from: string; victim: string; expect: 'blocked' | 'accepted' }
+  /** A file on the server, optionally containing this text and uploaded with this protocol. */
+  | { type: 'fileOnServer'; device: string; file: string; contains?: string; via?: 'tftp' | 'ftp' | 'scp' | 'sftp' }
+  /** The configuration has been saved to startup-config, optionally containing this text. */
+  | { type: 'startupConfig'; device: string; contains?: string }
+  /** A policy map attached to the interface in this direction. */
+  | { type: 'servicePolicy'; device: string; interface: string; direction: 'input' | 'output'; policy: string }
+  /** A class in a policy map, optionally marking this DSCP, with a priority queue, a bandwidth guarantee or a policer. */
+  | { type: 'qosClass'; device: string; policy: string; class: string; setDscp?: number; priority?: boolean; bandwidth?: boolean; police?: boolean }
+  /** `mls qos` on the switch, and with `interface`, that port's trust state. */
+  | { type: 'qosTrust'; device: string; interface?: string; trust?: 'dscp' | 'cos' | 'none' }
+  /** Pings from `from` to `to` arrive carrying this DSCP value. */
+  | { type: 'dscpReceived'; from: string; to: string; dscp: number }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery', 'stormProbe', 'rogueRa', 'dscpReceived'];
 
 export interface Objective {
   text: string;

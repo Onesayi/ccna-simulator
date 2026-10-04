@@ -32,7 +32,7 @@ function endpoint(spec: string): [string, string] {
 }
 
 /** Lines that mean a command was refused, on any of the shells. */
-export const SHELL_ERROR = /^(% |Invalid Command|Incorrect input|Request failed|Error|usage:|ERROR!|Unable to connect)/;
+export const SHELL_ERROR = /^(% |%Error|Invalid Command|Incorrect input|Request failed|Error|usage:|ERROR!|Unable to connect)/;
 
 /**
  * Runs a device's starting configuration and throws on the first error, so a broken lab fails its
@@ -80,6 +80,7 @@ export class LabRun {
     for (const spec of lab.topology.devices) {
       const d = this.device(spec.hostname);
       if (d instanceof Pc && spec.mac) d.nic.mac = spec.mac;
+      if (d instanceof Pc && spec.dscp !== undefined) d.marking = spec.dscp;
       if (d instanceof Pc && spec.ip && spec.ip !== 'dhcp') {
         const [address = '', len = '24'] = spec.ip.split('/');
         d.configure(address, parsePrefix(len), spec.gateway);
