@@ -43,6 +43,7 @@ header { flex-wrap: wrap; }
 .react-flow__edge.link-down .react-flow__edge-path { stroke: #d1453b; stroke-width: 2; stroke-dasharray: 6 4; }
 .react-flow__edge.link-blocked .react-flow__edge-path { stroke: #d97706; stroke-width: 2; stroke-dasharray: 2 4; }
 .react-flow__edge.link-bundled .react-flow__edge-path { stroke-width: 4; }
+.react-flow__edge.link-air .react-flow__edge-path { stroke: #3b82f6; stroke-width: 1.5; stroke-dasharray: 3 5; }
 .react-flow__edge-text { font-size: 11px; fill: var(--text); }
 .react-flow__edge-textbg { fill: var(--panel); }
 
@@ -156,9 +157,22 @@ header button.active { background: #2563eb; border-color: #2563eb; color: #fff; 
 .proto-udp td, .proto-dhcp td, .proto-ntp td { background: #daeeff; }
 .proto-ospf td, .proto-hsrp td { background: #fff3d6; }
 .proto-stp td, .proto-cdp td, .proto-lldp td, .proto-lacp td, .proto-pagp td { background: #eef0f2; }
+.proto-tacacs- td, .proto-radius td, .proto-snmp td { background: #e4f7e9; }
+.proto-capwap td, .proto-capwap-data td, .proto-802-11 td, .proto-eapol td { background: #e0f4f7; }
 .capture-detail { border-left: 1px solid var(--border); overflow: auto; padding: 6px 10px; }
 .capture-detail summary { cursor: pointer; font-weight: 600; margin: 4px 0; }
 .capture-detail dl { margin: 0 0 6px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 .capture-detail dt { display: inline; color: var(--muted); }
 .capture-detail dd { display: inline; margin: 0; }
 @media (max-width: 1000px) { .capture-body { grid-template-columns: 1fr; } .capture-detail { border-left: 0; border-top: 1px solid var(--border); max-height: 140px; } }
+
+/* WLC web GUI */
+.wlc-panel { height: calc(100% - 40px); overflow: auto; padding: 8px 12px; font-size: 12px; background: var(--panel); color: var(--text); border-radius: 6px; }
+.wlc-panel h3 { margin: 12px 0 4px; font-size: 13px; }
+.wlc-panel table { border-collapse: collapse; width: 100%; }
+.wlc-panel th, .wlc-panel td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.wlc-panel td button { margin-right: 4px; font-size: 11px; }
+.wlc-panel .muted { color: var(--muted); }
+.wlc-panel .bad { color: #d1453b; }
+.wlc-form { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 10px 0; border: 1px solid var(--border); border-radius: 6px; }
+.wlc-log { background: var(--panel); border: 1px solid var(--border); padding: 6px; white-space: pre-wrap; font-size: 11px; }

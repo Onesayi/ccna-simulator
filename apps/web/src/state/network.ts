@@ -1,7 +1,9 @@
 import { create } from 'zustand';
-import { CliSession, Pc, Router, Switch, Topology, createShell, type Device, type Shell } from '@ccna-sim/engine';
+import { CliSession, Pc, Router, Switch, Topology, createDevice, createShell, type Device, type Shell } from '@ccna-sim/engine';
 
 export type DeviceKind = Device['kind'];
+/** What the toolbar can add: every device kind, plus a laptop (a PC with Wi-Fi). */
+export type PaletteKind = DeviceKind | 'laptop';
 export interface XY {
   x: number;
   y: number;
@@ -90,9 +92,9 @@ function demoTopology(): { topology: Topology; positions: Map<string, XY> } {
   return { topology: net, positions };
 }
 
-const PREFIX: Record<DeviceKind, string> = { router: 'R', switch: 'SW', pc: 'PC' };
+const PREFIX: Record<PaletteKind, string> = { router: 'R', switch: 'SW', pc: 'PC', laptop: 'LAPTOP', server: 'SRV', wlc: 'WLC', ap: 'AP' };
 
-function nextHostname(topology: Topology, kind: DeviceKind): string {
+function nextHostname(topology: Topology, kind: PaletteKind): string {
   for (let n = 1; ; n++) if (!topology.find(`${PREFIX[kind]}${n}`)) return `${PREFIX[kind]}${n}`;
 }
 
@@ -117,7 +119,7 @@ interface NetworkState {
   touch: (config?: boolean) => void;
   /** Swaps in another network, such as a lab's. */
   load: (topology: Topology, positions: Map<string, XY>) => void;
-  addDevice: (kind: DeviceKind, at?: XY) => void;
+  addDevice: (kind: PaletteKind, at?: XY) => void;
   removeDevice: (id: string) => void;
   connect: (aId: string, bId: string) => void;
   disconnect: (linkId: string) => void;
@@ -156,7 +158,8 @@ export const useNetwork = create<NetworkState>((set, get) => ({
   addDevice: (kind, at) => {
     const { topology, positions } = get();
     const hostname = nextHostname(topology, kind);
-    const device = topology.add(kind === 'router' ? new Router(hostname) : kind === 'switch' ? new Switch(hostname) : new Pc(hostname));
+    const device = topology.add(kind === 'laptop' ? createDevice('pc', hostname, { wireless: true }) : createDevice(kind, hostname));
+    topology.converge();
     const n = topology.devices.size;
     positions.set(device.id, at ?? { x: 60 + (n % 5) * 140, y: 480 + Math.floor(n / 5) * 120 });
     set((s) => ({ version: s.version + 1, configVersion: s.configVersion + 1, selectedId: device.id, error: undefined }));
@@ -178,6 +181,8 @@ export const useNetwork = create<NetworkState>((set, get) => ({
     if (!a || !b || a === b) return;
     const [pa] = a.freePorts();
     const [pb] = b.freePorts();
+    const wireless = [a, b].find((d) => d instanceof Pc && d.wifi);
+    if (wireless) return set({ error: `${wireless.hostname} has no cable port: open its console and join a WLAN with netsh wlan connect` });
     if (!pa || !pb) return set({ error: `${!pa ? a.hostname : b.hostname} has no free ports` });
     topology.connect(pa, pb);
     topology.converge();

@@ -149,6 +149,8 @@ describe('WLANs and clients', () => {
     expect(t.w.execute('show msglog')).toContain('MIC validation failed');
     expect(t.pc.execute('netsh wlan connect ssid=Staff key=CorpWiFi2024')).toBe('Connection request was completed successfully.');
     expect(t.lap.nic.ip?.address).toMatch(/^192\.168\.20\./);
+    // Learned from the DHCP ACK, before the client sends anything else.
+    expect(t.w.execute('show client summary')).toMatch(/RUN .*192\.168\.20\./);
     expect(t.pc.execute('netsh wlan show interfaces')).toContain('Channel                : 36');
     expect(t.pc.execute('ping 192.168.20.1')).toContain('Received = 4');
     expect(t.pc.execute('ipconfig')).toContain('Wireless0 Connection');

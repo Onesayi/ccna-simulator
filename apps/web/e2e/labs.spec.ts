@@ -6,7 +6,7 @@ const objective = (page: import('@playwright/test').Page, text: string) =>
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(45);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(56);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 
@@ -89,4 +89,26 @@ test('a PC gets an IPv6 address with SLAAC', async ({ page }) => {
   await typeLines(page, 'ipv6config autoconfig');
   await expect(terminal(page)).toContainText('IPv6 Address....................: 2001:DB8:ACAD:2:');
   await expect(objective(page, 'PC2 built its own address with SLAAC')).toHaveClass(/pass/);
+});
+
+test('a WLAN built in the controller GUI carries a wireless laptop', async ({ page }) => {
+  await page.goto('./#/labs/wlan-wpa2-psk');
+  await expect(objective(page, 'AP1 has joined WLC1')).toHaveClass(/pass/);
+
+  await openDevice(page, 'WLC1');
+  await typeLines(page, 'config interface create staff 20', 'config interface address dynamic-interface staff 192.168.20.5 255.255.255.0 192.168.20.1');
+  await page.getByRole('button', { name: 'Web GUI' }).click();
+  await page.getByLabel('WLAN ID').fill('1');
+  await page.getByLabel('SSID').fill('Staff');
+  await page.getByLabel('Security').selectOption('wpa2-psk');
+  await page.getByLabel('Passphrase').fill('CorpWiFi2024');
+  await page.getByLabel('Interface').selectOption('staff');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(page.getByLabel('Equivalent CLI')).toContainText('config wlan security wpa akm psk set-key ascii **** 1');
+  await expect(page.locator('.wlc-panel tbody tr', { hasText: 'Staff' })).toContainText('Enabled');
+  await expect(objective(page, 'WLAN Staff uses WPA2-PSK')).toHaveClass(/pass/);
+
+  await openDevice(page, 'LAPTOP1');
+  await typeLines(page, 'netsh wlan connect ssid=Staff key=CorpWiFi2024');
+  await expect(objective(page, 'LAPTOP1 is on Staff')).toHaveClass(/pass/);
 });

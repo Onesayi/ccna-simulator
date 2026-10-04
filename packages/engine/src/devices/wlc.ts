@@ -278,6 +278,11 @@ export class WirelessController extends IpDevice {
     const { vlan: _tag, ...untagged } = frame;
     // Frames for wireless clients in this VLAN go down the CAPWAP tunnel to their AP.
     const clients = [...this.clients.values()].filter((c) => c.state === 'RUN' && this.vlanOf(this.wlans.get(c.wlan)!) === vlan);
+    // Like a real controller, learn each client's address from the DHCP ACK it is handed.
+    if (p.kind === 'udp' && p.dhcp?.op === 'ack' && p.dhcp.yiaddr) {
+      const c = clients.find((x) => x.mac === p.dhcp!.chaddr);
+      if (c) c.ip = p.dhcp.yiaddr;
+    }
     if (frame.dst === BROADCAST_MAC || frame.dst.startsWith('0100.5e') || frame.dst.startsWith('3333')) {
       for (const c of clients) this.toClient(c, untagged);
     } else {

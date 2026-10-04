@@ -58,6 +58,13 @@ export function CapturePanel({ canEdit }: { canEdit: boolean }) {
               {linkName(l)}
             </option>
           ))}
+          {[...topology.devices.values()]
+            .filter((d) => d.kind === 'ap')
+            .map((ap) => (
+              <option key={ap.id} value={`air:${ap.id}`}>
+                {ap.hostname} radio (Wi-Fi)
+              </option>
+            ))}
         </select>
         <input
           aria-label="Display filter"
@@ -94,7 +101,7 @@ export function CapturePanel({ canEdit }: { canEdit: boolean }) {
               {rows.map((e) => {
                 const s = summarize(e.frame);
                 return (
-                  <tr key={e.no} className={`proto-${s.protocol.toLowerCase()}${e.no === selectedNo ? ' selected' : ''}`} onClick={() => setSelectedNo(e.no)}>
+                  <tr key={e.no} className={`proto-${s.protocol.toLowerCase().replace(/[^a-z0-9]+/g, '-')}${e.no === selectedNo ? ' selected' : ''}`} onClick={() => setSelectedNo(e.no)}>
                     <td>{e.no}</td>
                     <td>{((e.at - t0) / 1000).toFixed(3)}</td>
                     <td>
