@@ -64,6 +64,27 @@ test('labs: router-on-a-stick graded live', async ({ page }) => {
   await page.screenshot({ path: out('lab.png') });
 });
 
+test('exam: results by domain with labs to practise', async ({ page }) => {
+  // A fixed seed, so the same questions come up every time.
+  await page.addInitScript(
+    (session) => localStorage.getItem('ccna-sim:exam-session:v1') ?? localStorage.setItem('ccna-sim:exam-session:v1', JSON.stringify({ ...session, startedAt: Date.now() })),
+    { seed: 2026, questions: 20, seconds: 1440, answers: {}, flagged: [] },
+  );
+  await page.goto('./#/exam');
+  const options = page.locator('.question-card .options label');
+  for (let i = 0; i < 20; i++) {
+    await page.locator('.question-grid button', { hasText: new RegExp(`^${i + 1}$`) }).click();
+    await options.nth(i % 3 === 0 ? 1 : 0).click();
+  }
+  await page.locator('.question-grid button', { hasText: /^4$/ }).click();
+  await page.getByRole('button', { name: 'Flag for review' }).click();
+  await page.screenshot({ path: out('exam-question.png') });
+  page.on('dialog', (d) => d.accept());
+  await page.getByRole('button', { name: 'Finish exam' }).first().click();
+  await expect(page.getByRole('status')).toContainText('/ 1000');
+  await page.screenshot({ path: out('exam-results.png') });
+});
+
 // A short walkthrough for the top of the README: open a lab, configure the router, watch objectives pass.
 // Needs ffmpeg on PATH to turn the recording into a GIF; skipped otherwise.
 test('walkthrough.gif', async ({ browser }) => {

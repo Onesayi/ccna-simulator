@@ -55,3 +55,4 @@ export * from './routing/glbp';
 export * from './services/dscp';
 export * from './services/qos';
 export * from './switching/storm-control';
+export * from './exam';
