@@ -45,3 +45,8 @@ export * from './services/aaa-server';
 export * from './services/snmp';
 export * from './services/restconf';
 export * from './services/ansible';
+export * from './devices/ap';
+export * from './devices/wlc';
+export * from './wireless/wifi';
+export * from './cli/ap-shell';
+export * from './cli/wlc-shell';

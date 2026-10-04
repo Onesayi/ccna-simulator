@@ -234,6 +234,7 @@ export function runningConfig(d: Device & IpDevice): string {
       if (pool.defaultRouter) out.push(` default-router ${pool.defaultRouter}`);
       if (pool.dns) out.push(` dns-server ${pool.dns}`);
       if (pool.domain) out.push(` domain-name ${pool.domain}`);
+      if (pool.option43) out.push(` option 43 hex ${pool.option43}`);
       if (pool.leaseDays !== 1) out.push(` lease ${pool.leaseDays}`);
       out.push('!');
     }

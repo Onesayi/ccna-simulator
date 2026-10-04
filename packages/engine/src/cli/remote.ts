@@ -19,6 +19,8 @@ export interface Shell {
 export interface Pending {
   prompt: string;
   masked?: boolean;
+  /** Keep leading spaces (lines of a file being typed in). */
+  raw?: boolean;
   answer(line: string): string;
 }
 
@@ -50,8 +52,8 @@ export class Interaction {
     return this.remote ? Boolean(this.remote.shell.instantHelp) : !this.pending;
   }
 
-  ask(prompt: string, answer: (line: string) => string, masked = false): void {
-    this.pending = { prompt, masked, answer };
+  ask(prompt: string, answer: (line: string) => string, masked = false, raw = false): void {
+    this.pending = { prompt, masked, raw, answer };
   }
 
   execute(line: string): string {
@@ -65,7 +67,7 @@ export class Interaction {
     }
     const p = this.pending!;
     this.pending = undefined;
-    return p.answer(line.trim());
+    return p.answer(p.raw ? line.replace(/\r$/, '') : line.trim());
   }
 }
 

@@ -8,6 +8,7 @@ import { createDevice } from '../devices/factory';
 import { IosDevice } from '../devices/ios-device';
 import { Server } from '../devices/server';
 import { CliSession } from '../cli/session';
+import type { Interaction, Shell } from '../cli/remote';
 import { evaluate } from './checks';
 import { PROBE_CHECKS, type LabDefinition, type Objective } from './types';
 
@@ -31,18 +32,24 @@ function endpoint(spec: string): [string, string] {
 }
 
 /** Lines that mean a command was refused, on any of the shells. */
-export const SHELL_ERROR = /^(% |Invalid Command|Incorrect input|Error|usage:|ERROR!)/;
+export const SHELL_ERROR = /^(% |Invalid Command|Incorrect input|Request failed|Error|usage:|ERROR!|Unable to connect)/;
 
 /**
  * Runs a device's starting configuration and throws on the first error, so a broken lab fails its
  * tests. IOS devices start from privileged EXEC; other devices take their own shell's commands.
  */
+/** The line as typed: trimmed, except while a shell collects the lines of a file (YAML needs its indentation). */
+function typed(shell: Shell, line: string): string {
+  const io = (shell as { io?: Interaction }).io;
+  return io?.pending?.raw ? line.replace(/\s+$/, '') : line.trim();
+}
+
 function configure(device: Device, commands: string): void {
   const ios = device instanceof IosDevice;
   const shell = ios ? new CliSession(device, { loggedIn: true }) : createShell(device);
   if (ios) shell.execute('enable');
   for (const raw of commands.trim().split('\n')) {
-    const line = raw.trim();
+    const line = typed(shell, raw);
     const out = shell.execute(line);
     if (SHELL_ERROR.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${device.hostname}: "${line}" -> ${out}`);
   }
@@ -60,7 +67,7 @@ export class LabRun {
 
   constructor(readonly lab: LabDefinition) {
     for (const spec of lab.topology.devices) {
-      const d = createDevice(spec.kind, spec.hostname);
+      const d = createDevice(spec.kind, spec.hostname, { wireless: spec.wireless });
       this.topology.add(d);
       this.byLabName.set(spec.hostname.toLowerCase(), d);
       this.positions.set(d.id, { x: spec.at[0], y: spec.at[1] });
@@ -82,6 +89,8 @@ export class LabRun {
         d.configureIpv6(address, prefix, spec.gateway6);
       }
       if (d instanceof Server) for (const [path, text] of Object.entries(spec.files ?? {})) d.files.set(path, text.replace(/^\n/, ''));
+      // A saved Wi-Fi profile: the laptop joins on its own once the APs are up.
+      if (d instanceof Pc && d.wifi && spec.wifi) d.wifi.profile = { ...spec.wifi };
       if (spec.config) configure(d, spec.config);
     }
     // DHCP and SLAAC clients ask once the network is built and spanning tree has settled, as if just powered on.
@@ -126,9 +135,10 @@ export class LabRun {
   applySolution(): void {
     for (const [name, commands] of Object.entries(this.lab.solution)) {
       const shell = createShell(this.device(name));
-      for (const line of commands.trim().split('\n')) {
-        const out = shell.execute(line.trim());
-        if (SHELL_ERROR.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${name}: "${line.trim()}" -> ${out}`);
+      for (const raw of commands.trim().split('\n')) {
+        const line = typed(shell, raw);
+        const out = shell.execute(line);
+        if (SHELL_ERROR.test(out) && !out.startsWith('% Access VLAN')) throw new Error(`${name}: "${line}" -> ${out}`);
       }
     }
     this.lab.objectives.forEach((o, i) => {

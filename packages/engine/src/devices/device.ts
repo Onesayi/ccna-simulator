@@ -266,7 +266,8 @@ export abstract class Device {
     if (event) this.topology?.scheduler.cancel(event);
   }
 
-  abstract receive(on: Interface, frame: Frame): void;
+  /** A frame arrived on `on`. Over the air, `from` is the sending radio. */
+  abstract receive(on: Interface, frame: Frame, from?: Interface): void;
 
   /** Start of a convergence round: send periodic control-plane messages (OSPF hellos). */
   tick(): void {}

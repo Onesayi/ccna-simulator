@@ -313,7 +313,9 @@ function transport(p: IpPacket): Layer[] {
         if (c.apName) fields.push(['AP Name', c.apName]);
         if (c.wlcName) fields.push(['AC Name', c.wlcName]);
         if (c.wlcIp) fields.push(['AC IPv4 Address', c.wlcIp]);
-        if (c.wlan !== undefined) fields.push(['WLAN ID', String(c.wlan)]);
+        if (c.client) fields.push(['Wireless client', c.client]);
+        if (c.wlans) fields.push(['WLANs', c.wlans.map((w) => `${w.id}:${w.ssid}`).join(', ') || 'none']);
+        if (c.channels) fields.push(['Channels', `2.4 GHz ${c.channels[0]}, 5 GHz ${c.channels[1]}`]);
         layers.push({ title: `Control And Provisioning of Wireless Access Points - ${c.type === 'data' ? 'Data' : 'Control'}`, fields });
         if (c.inner) layers.push(...dissect(c.inner).map((l) => ({ ...l, title: `[tunneled] ${l.title}` })));
       }

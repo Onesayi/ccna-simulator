@@ -35,6 +35,10 @@ export interface LabDeviceSpec {
   mac?: string;
   /** Commands run before the lab starts: IOS from privileged EXEC, or the device's own shell (servers, controllers). */
   config?: string;
+  /** PCs only: a laptop with a Wi-Fi radio instead of an Ethernet port. */
+  wireless?: boolean;
+  /** Laptops only: a saved Wi-Fi profile, joined automatically once an AP beacons the SSID. */
+  wifi?: { ssid: string; key?: string; username?: string; password?: string };
   /** Servers only: files to put on the server (inventories, playbooks), by name. */
   files?: Record<string, string>;
 }
@@ -147,13 +151,37 @@ export type Check =
   | { type: 'discovery'; device: string; protocol: 'cdp' | 'lldp'; enabled: boolean; interface?: string }
   /** The interface description contains this text (case-insensitive). */
   | { type: 'description'; device: string; interface: string; contains: string }
+  /** An AAA method list (`login` authentication or `exec` authorization), `default` unless named, with exactly these methods. */
+  | { type: 'aaaMethods'; device: string; list: 'login' | 'exec'; name?: string; methods: string }
+  /** A RADIUS or TACACS+ server with this address and a key. */
+  | { type: 'aaaServer'; device: string; protocol: 'radius' | 'tacacs+'; address: string }
+  /** A VTY login with these credentials, through AAA if it is on: `success`, optionally at this privilege level. */
+  | { type: 'aaaLogin'; device: string; username: string; password: string; expect: 'success' | 'fail'; privilege?: number }
+  | { type: 'snmpCommunity'; device: string; community: string; access: 'ro' | 'rw'; acl?: string }
+  /** An SNMPv3 user whose group requires this level (`priv` = authPriv). */
+  | { type: 'snmpUser'; device: string; user: string; level: 'noauth' | 'auth' | 'priv' }
+  | { type: 'snmpHost'; device: string; address: string; version?: '2c' | '3' }
+  /** The server's `snmpget` of sysName with this community answers (`answer`) or times out. */
+  | { type: 'snmpQuery'; from: string; to: string; community: string; expect: 'answer' | 'timeout' }
+  /** The server logged a trap from `from` (any device), optionally of this kind. */
+  | { type: 'trapReceived'; device: string; from?: string; trap?: 'linkUp' | 'linkDown' }
+  /** RESTCONF is reachable: the HTTPS server runs and `restconf` is on. */
+  | { type: 'restconf'; device: string }
+  /** A WLAN on the controller with this SSID, optionally enabled, with this security and bridged to this VLAN (0 = untagged). */
+  | { type: 'wlan'; device: string; ssid: string; enabled?: boolean; security?: 'open' | 'wpa2-psk' | 'wpa3-sae' | 'wpa2-enterprise'; vlan?: number }
+  /** The AP has joined a controller, optionally this one. */
+  | { type: 'apJoined'; device: string; controller?: string }
+  /** The laptop is associated to this SSID, optionally with an address inside `network`. */
+  | { type: 'wirelessClient'; device: string; ssid: string; network?: string; prefix?: number }
+  /** No two joined APs use the same or (2.4 GHz) overlapping channels. */
+  | { type: 'apChannels'; device: string; band: '2.4' | '5' }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery'];
 
 export interface Objective {
   text: string;

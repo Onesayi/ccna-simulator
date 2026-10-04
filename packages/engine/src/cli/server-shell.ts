@@ -22,7 +22,8 @@ const SERVER_HELP = `Server commands (the PC commands work too: ping, traceroute
   curl -k -u <user>:<pw> https://<ip>/restconf/data/<path>   RESTCONF GET
   curl -k -u <user>:<pw> -X PATCH -d '<json>' https://<ip>/restconf/data/<path>
   ansible-playbook -i <inventory> <playbook.yml>        Run a playbook
-  ls | cat <file>                                       Files on the server`;
+  ls | cat <file>                                       Files on the server
+  cat > <file> <<EOF ... EOF                            Write a file (or use the Files tab)`;
 
 /** Splits a command line on spaces, keeping 'quoted strings' and "quoted strings" together. */
 export function splitArgs(line: string): string[] {
@@ -96,6 +97,8 @@ export class ServerShell extends PcShell {
   }
 
   protected override run(line: string): string {
+    const heredoc = /^cat\s*>\s*(\S+)(?:\s*<<\s*['"]?(\w+)['"]?)?\s*$/.exec(line.trim());
+    if (heredoc) return this.writeFile(heredoc[1]!, heredoc[2] ?? 'EOF');
     const args = splitArgs(line.trim());
     const [cmd = '', ...rest] = args;
     switch (cmd) {
@@ -128,6 +131,23 @@ export class ServerShell extends PcShell {
   }
 
   // ---------------------------------------------------------------- files
+
+  /** `cat > file <<EOF`: the lines that follow, up to the terminator, become the file. */
+  private writeFile(path: string, end: string): string {
+    const name = path.replace(/^(\/root\/|\.\/)/, '');
+    const lines: string[] = [];
+    const next = (line: string): string => {
+      if (line.trim() === end) {
+        this.server.files.set(name, `${lines.join('\n')}\n`);
+        return '';
+      }
+      lines.push(line);
+      this.io.ask('> ', next, false, true);
+      return '';
+    };
+    this.io.ask('> ', next, false, true);
+    return '';
+  }
 
   private cat(path: string | undefined): string {
     if (!path) return 'cat: missing operand';

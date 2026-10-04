@@ -169,6 +169,12 @@ export const SERVICE_COMMANDS: Command[] = [
   { syntax: 'default-router <ip>', modes: ['dhcp-config'], help: 'Default gateway handed to clients', run: (s, [gw]) => void (s.currentPool!.defaultRouter = ip(gw)) },
   { syntax: 'no default-router', modes: ['dhcp-config'], help: 'Remove the default gateway', run: (s) => void (s.currentPool!.defaultRouter = undefined) },
   { syntax: 'dns-server <ip>', modes: ['dhcp-config'], help: 'DNS server handed to clients', run: (s, [dns]) => void (s.currentPool!.dns = ip(dns)) },
+  { syntax: 'option 43 hex <hex>', modes: ['dhcp-config'], help: 'Vendor option 43: controller addresses for lightweight APs (f104 + the WLC IP in hex)', run: (s, [hex]) => {
+    const clean = hex!.toLowerCase();
+    if (!/^[0-9a-f.]+$/.test(clean) || clean.replace(/\./g, '').length % 2) throw new Error('Invalid hex string, expected digits such as f104.0a00.0005');
+    s.currentPool!.option43 = clean;
+  } },
+  { syntax: 'no option 43', modes: ['dhcp-config'], help: 'Remove option 43', run: (s) => void (s.currentPool!.option43 = undefined) },
   { syntax: 'domain-name <name>', modes: ['dhcp-config'], help: 'DNS domain handed to clients', run: (s, [name]) => void (s.currentPool!.domain = name) },
   { syntax: 'lease <days>', modes: ['dhcp-config'], help: 'Lease time in days', run: (s, [days]) => void (s.currentPool!.leaseDays = int(days, 0, 365)) },
   { syntax: 'show ip dhcp binding', modes: EXEC, help: 'Addresses leased by this DHCP server', run: (s) => showDhcpBinding(requireRouter(s).dhcpServer) },

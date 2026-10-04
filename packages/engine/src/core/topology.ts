@@ -104,7 +104,8 @@ export class Topology {
       this.trace.push({ no: ++this.framesSeen, at: this.scheduler.now, link, from: from.fullName, to: to.fullName, frame });
       if (this.trace.length > TRACE_LIMIT + 1000) this.trace.splice(0, this.trace.length - TRACE_LIMIT);
       to.counters.in++;
-      to.device.receive(to, frame);
+      // Radio receivers learn who sent the frame; a cable already says that.
+      to.device.receive(to, frame, link.startsWith('air') ? from : undefined);
     });
   }
 

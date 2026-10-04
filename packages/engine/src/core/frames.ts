@@ -95,14 +95,27 @@ export interface SnmpMessage {
  * CAPWAP between a lightweight AP and its controller: control messages on UDP 5246 (discovery,
  * join, echo), and client traffic tunneled on UDP 5247 with the client's frame inside.
  */
+/** The security a WLAN asks for, as clients see it in beacons. */
+export type WlanSecurity = 'open' | 'wpa2-psk' | 'wpa3-sae' | 'wpa2-enterprise';
+
+/** A WLAN as the controller pushes it to its APs, which beacon it. */
+export interface WlanAdvert {
+  id: number;
+  ssid: string;
+  security: WlanSecurity;
+}
+
 export interface CapwapMessage {
   type: 'discovery-request' | 'discovery-response' | 'join-request' | 'join-response' | 'echo-request' | 'echo-response' | 'data';
   apName?: string;
   wlcName?: string;
   /** The controller's management address, in discovery responses. */
   wlcIp?: string;
-  /** Data: the WLAN the client frame belongs to, and the frame itself. */
-  wlan?: number;
+  /** Join and echo responses: the WLANs to beacon and the radio channels (2.4 GHz, 5 GHz) to use. */
+  wlans?: WlanAdvert[];
+  channels?: [number, number];
+  /** Data: the wireless client the frame is from or to, and the 802.11 or Ethernet frame itself. */
+  client?: MacAddress;
   inner?: Frame;
 }
 
