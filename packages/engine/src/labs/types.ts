@@ -31,6 +31,8 @@ export interface LabDeviceSpec {
   ipv6?: string;
   /** PCs only: the IPv6 default gateway. */
   gateway6?: string;
+  /** PCs only: a fixed MAC address, for labs whose solution has to name it (ARP ACLs, static bindings). */
+  mac?: string;
   /** IOS commands run from privileged EXEC before the lab starts. */
   config?: string;
 }
@@ -108,6 +110,19 @@ export type Check =
   | { type: 'dhcpSnoopingTrust'; device: string; interface: string; trusted: boolean }
   /** The switch has a snooping binding for this client (a PC from the lab). */
   | { type: 'dhcpSnoopingBinding'; device: string; client: string }
+  /** Dynamic ARP Inspection runs for the VLAN, optionally with exactly these validation checks. */
+  | { type: 'arpInspection'; device: string; vlan: number; validate?: ('src-mac' | 'dst-mac' | 'ip')[] }
+  /** The port's DAI trust state, optionally with this rate limit (pps). */
+  | { type: 'arpInspectionTrust'; device: string; interface: string; trusted: boolean; rate?: number }
+  /** An ARP ACL is applied to the VLAN and permits this PC's address and MAC. */
+  | { type: 'arpAclPermits'; device: string; vlan: number; client: string }
+  /** IP Source Guard on the port, optionally in `ip` or `ip-mac` mode. */
+  | { type: 'sourceGuard'; device: string; interface: string; mode?: 'ip' | 'ip-mac' }
+  /** A static `ip source binding` for this PC's MAC and address. */
+  | { type: 'sourceBinding'; device: string; client: string; interface?: string }
+  | { type: 'errdisableRecovery'; device: string; cause: string; interval?: number }
+  /** `from` sends a gratuitous ARP claiming `claim`; `blocked` passes when `victim` keeps its real entry for it. */
+  | { type: 'arpSpoof'; from: string; claim: string; victim: string; expect: 'blocked' | 'poisoned' }
   /** The SSH server runs, optionally at version 2 and with a key of at least `modulus` bits. */
   | { type: 'sshServer'; device: string; version?: 2; modulus?: number }
   /** The VTY lines accept exactly these transports, optionally with this login method. */
@@ -136,7 +151,7 @@ export type Check =
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof'];
 
 export interface Objective {
   text: string;

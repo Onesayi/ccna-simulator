@@ -1,7 +1,80 @@
 import type { LabDefinition } from '../types';
 
-/** Domain 5.0: reading syslog messages and keeping clocks in step with NTP (blueprint 5.6). */
+/** Domain 5.0: reading syslog messages, keeping clocks in step with NTP, and reading a capture (blueprint 5.6, 5.3). */
 export const operationsLabs: LabDefinition[] = [
+  {
+    id: 'capture-the-fault',
+    title: 'Find the fault in a packet capture',
+    domain: '5.0',
+    blueprint: ['5.3', '1.6'],
+    kind: 'troubleshoot',
+    difficulty: 2,
+    summary: 'PC1 cannot reach the server. Click the cable, read the capture, and fix what it shows.',
+    briefing: `PC1 reports that it cannot reach the server SRV at 192.168.1.100, though PC2 on the same switch is fine. Rather than guess, watch the traffic: click the cable between **PC1 and SW1** on the canvas (or press **Capture**), then run \`ping 192.168.1.100\` from PC1 and read what crosses the wire.
+
+You will see PC1 send an ARP request, but look at **who it is asking for**. PC1's gateway is set to an address on a different subnet, so it tries to ARP for a host that cannot answer instead of sending the packet to the real gateway R1 at 192.168.1.1.
+
+Fix PC1's configuration so it uses the right default gateway, then ping SRV again and confirm from the capture that the echo requests now leave for the gateway's MAC. Use the display filter (try \`arp\` and then \`icmp\`) to focus the list.`,
+    addressing: [
+      { device: 'R1', interface: 'Gi0/0', address: '192.168.1.1/24', note: 'Gateway' },
+      { device: 'SRV', interface: 'Eth0', address: '192.168.1.100/24', note: 'SW1 Gi0/8' },
+      { device: 'PC1', interface: 'Eth0', address: '192.168.1.10/24', note: 'Wrong gateway set' },
+      { device: 'PC2', interface: 'Eth0', address: '192.168.1.11/24', note: 'Works fine' },
+    ],
+    topology: {
+      devices: [
+        { hostname: 'R1', kind: 'router', at: [250, 0], config: `conf t
+          int g0/0
+          ip address 192.168.1.1 255.255.255.0
+          no shut` },
+        { hostname: 'SW1', kind: 'switch', at: [250, 180] },
+        { hostname: 'SRV', kind: 'pc', at: [460, 360], ip: '192.168.1.100/24', gateway: '192.168.1.1' },
+        // PC1 points at a gateway on the wrong subnet, so ARP for off-net destinations goes nowhere.
+        { hostname: 'PC1', kind: 'pc', at: [40, 360], ip: '192.168.1.10/24', gateway: '192.168.0.1' },
+        { hostname: 'PC2', kind: 'pc', at: [250, 360], ip: '192.168.1.11/24', gateway: '192.168.1.1' },
+      ],
+      links: [
+        ['PC1 Eth0', 'SW1 Gi0/1'],
+        ['PC2 Eth0', 'SW1 Gi0/2'],
+        ['SRV Eth0', 'SW1 Gi0/8'],
+        ['R1 Gi0/0', 'SW1 Gi0/5'],
+      ],
+    },
+    objectives: [
+      { text: "PC1's default gateway is 192.168.1.1", check: { type: 'defaultGateway', device: 'PC1', address: '192.168.1.1' }, hint: 'On PC1: `ipconfig 192.168.1.10 255.255.255.0 192.168.1.1`.' },
+      { text: 'PC1 can reach SRV', check: { type: 'ping', from: 'PC1', to: '192.168.1.100', expect: 'success' } },
+      { text: 'PC1 can reach the gateway', check: { type: 'ping', from: 'PC1', to: '192.168.1.1', expect: 'success' } },
+      {
+        text: 'Reading the capture',
+        check: {
+          type: 'quiz',
+          question: 'Before the fix, the capture on PC1\'s link shows repeated ARP requests. What was PC1 asking for?',
+          options: ['Who has 192.168.0.1 (its wrong gateway)', 'Who has 192.168.1.100 (the server)', 'Who has 192.168.1.1 (the real gateway)', 'Nothing; it sent ICMP straight out'],
+          answer: 0,
+          explain: 'SRV is in another subnet from PC1\'s point of view only because the mask is fine but the gateway is wrong; PC1 ARPs for its configured gateway 192.168.0.1, which is on a subnet no one is in, so no reply ever comes.',
+        },
+      },
+      {
+        text: 'Why PC2 worked',
+        check: {
+          type: 'quiz',
+          question: 'PC2 reached SRV without trouble. In the capture, how does PC2 reach a host in its own subnet?',
+          options: [
+            'It ARPs for the destination directly and sends the ICMP to that MAC',
+            'It sends everything to the gateway first',
+            'It floods the ICMP to every port',
+            'It uses the gateway MAC for same-subnet traffic',
+          ],
+          answer: 0,
+          explain: 'SRV is in PC2\'s own subnet, so PC2 ARPs for 192.168.1.100 itself and sends the echo request straight to the server\'s MAC. The gateway only matters for off-subnet destinations.',
+        },
+      },
+    ],
+    solution: {
+      PC1: 'ipconfig 192.168.1.10 255.255.255.0 192.168.1.1',
+    },
+    debrief: 'A packet capture turns "it does not work" into a precise observation: PC1 was ARPing for a gateway that does not exist, so nothing left the host. Capturing on the link closest to the complaint, then filtering by protocol, is the fastest way to tell a configuration fault from a wiring or reachability one. The same panel shows VLAN tags on trunks, the DHCP four-way handshake, and the TTL dropping hop by hop.',
+  },
   {
     id: 'syslog-read',
     title: 'Read the logs',

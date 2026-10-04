@@ -408,6 +408,76 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const b = sw.snooping.bindings.find((x) => x.mac === mac);
       return b ? ok : fail(`${sw.hostname} has no snooping binding for ${client.hostname} (${sw.snooping.bindings.length} in total)`);
     }
+    case 'arpInspection': {
+      const sw = switchOf(device(check.device));
+      if (!sw.dai.vlans.has(check.vlan)) return fail(`Dynamic ARP Inspection is not enabled for VLAN ${check.vlan}`);
+      if (check.validate) {
+        const want = [...check.validate].sort().join(' ');
+        const have = [...sw.dai.validate].sort().join(' ');
+        if (want !== have) return fail(`The validation checks are: ${have || 'none'}`);
+      }
+      return ok;
+    }
+    case 'arpInspectionTrust': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const trusted = Boolean(i.arpInspection?.trust);
+      if (trusted !== check.trusted) return fail(`${i.name} is ${trusted ? 'trusted' : 'untrusted'} for ARP inspection`);
+      if (check.rate !== undefined && i.arpInspection?.rate !== check.rate) return fail(`${i.name} allows ${i.arpInspection?.rate ?? 'the default 15'} ARP packets per second`);
+      return ok;
+    }
+    case 'arpAclPermits': {
+      const sw = switchOf(device(check.device));
+      const filter = sw.dai.filters.get(check.vlan);
+      if (!filter) return fail(`No ARP ACL is applied to VLAN ${check.vlan}`);
+      const acl = sw.dai.acls.get(filter.acl);
+      if (!acl) return fail(`VLAN ${check.vlan} uses ARP ACL ${filter.acl}, which does not exist`);
+      const pc = ipDevice(device(check.client));
+      const nic = pc.interfaces[0]!;
+      const ip = nic.ip?.address;
+      const line = acl.entries.find((e) => (e.ip === 'any' || ('host' in e.ip && e.ip.host === ip)) && (e.mac === 'any' || e.mac === nic.mac));
+      return line?.action === 'permit' ? ok : fail(`${acl.name} does not permit ${pc.hostname} (${ip ?? 'no IP'}, ${nic.mac})`);
+    }
+    case 'sourceGuard': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      if (!i.sourceGuard) return fail(`IP Source Guard is off on ${i.name}`);
+      return !check.mode || i.sourceGuard === check.mode ? ok : fail(`${i.name} filters on ${i.sourceGuard === 'ip' ? 'the IP address only' : 'IP and MAC'}`);
+    }
+    case 'sourceBinding': {
+      const sw = switchOf(device(check.device));
+      const pc = device(check.client);
+      const nic = pc.interfaces[0]!;
+      const b = sw.staticBindings.find((x) => x.mac === nic.mac);
+      if (!b) return fail(`${sw.hostname} has no static binding for ${pc.hostname}'s MAC ${nic.mac}`);
+      if (b.ip !== nic.ip?.address) return fail(`The binding for ${pc.hostname} says ${b.ip}`);
+      if (check.interface && b.port !== findIface(sw, check.interface)) return fail(`The binding for ${pc.hostname} points at ${b.port.name}`);
+      return ok;
+    }
+    case 'errdisableRecovery': {
+      const sw = switchOf(device(check.device));
+      if (!sw.errRecovery.causes.has(check.cause)) return fail(`Recovery for ${check.cause} is disabled`);
+      if (check.interval !== undefined && sw.errRecovery.interval !== check.interval) return fail(`The recovery interval is ${sw.errRecovery.interval} seconds`);
+      return ok;
+    }
+    case 'arpSpoof': {
+      const from = device(check.from);
+      const victim = ipDevice(device(check.victim));
+      if (!(from instanceof Pc)) throw new Error(`${from.hostname} is not a PC`);
+      victim.ping(check.claim, 1);
+      victim.network!.run();
+      const before = victim.arpTable.get(check.claim);
+      if (!before) return fail(`${victim.hostname} cannot resolve ${check.claim} to begin with`);
+      from.gratuitousArp(check.claim);
+      from.network!.run();
+      const poisoned = victim.arpTable.get(check.claim)?.mac === from.nic.mac;
+      // Put the victim's entry back, so the network is as the learner left it.
+      if (poisoned) victim.arpTable.set(check.claim, before);
+      if (poisoned === (check.expect === 'poisoned')) return ok;
+      return fail(poisoned ? `${victim.hostname} now maps ${check.claim} to ${from.hostname}'s MAC` : `${victim.hostname} kept its entry for ${check.claim}`);
+    }
     case 'sshServer': {
       const d = iosOf(device(check.device));
       const m = d.mgmt;

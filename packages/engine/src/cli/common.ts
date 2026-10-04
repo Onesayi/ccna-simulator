@@ -5,6 +5,7 @@ import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
+import type { ArpAcl } from '../switching/arp-inspection';
 import type { DhcpPool } from '../services/dhcp';
 import type { LineConfig } from '../services/management';
 import { IosDevice } from '../devices/ios-device';
@@ -23,6 +24,7 @@ export type Mode =
   | 'dhcp-config'
   | 'config-std-nacl'
   | 'config-ext-nacl'
+  | 'config-arp-nacl'
   | 'config-line';
 
 /** The parts of a CLI session that commands read and change. */
@@ -36,6 +38,8 @@ export interface Session {
   currentOspf?: OspfProcess;
   currentPool?: DhcpPool;
   currentAcl?: Acl;
+  /** `arp access-list <name>`. */
+  currentArpAcl?: ArpAcl;
   /** `line vty` or `line con`. */
   currentLine?: LineConfig;
   /** Questions the session is waiting on (`Password:`) and the telnet or SSH session it opened. */
@@ -59,7 +63,7 @@ export interface Command {
   run: (s: Session, args: string[]) => string | void;
 }
 
-export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl', 'config-line'];
+export const CONFIG_MODES: Mode[] = ['config', 'config-if', 'config-if-range', 'config-subif', 'config-vlan', 'config-router', 'dhcp-config', 'config-std-nacl', 'config-ext-nacl', 'config-arp-nacl', 'config-line'];
 export const IF_MODES: Mode[] = ['config-if', 'config-if-range', 'config-subif'];
 /** Switchport commands: one interface, or a range of them. */
 export const L2_IF_MODES: Mode[] = ['config-if', 'config-if-range'];

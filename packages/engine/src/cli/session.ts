@@ -7,6 +7,7 @@ import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
+import type { ArpAcl } from '../switching/arp-inspection';
 import type { DhcpPool } from '../services/dhcp';
 import type { IosDevice } from '../devices/ios-device';
 import type { LineConfig } from '../services/management';
@@ -20,6 +21,7 @@ import { IPV6_COMMANDS } from './commands-ipv6';
 import { OSPF_COMMANDS } from './commands-ospf';
 import { SERVICE_COMMANDS } from './commands-services';
 import { SWITCHING_COMMANDS } from './commands-switching';
+import { L2_SECURITY_COMMANDS } from './commands-l2security';
 import {
   formatIosPing,
   formatIosTraceroute,
@@ -48,6 +50,7 @@ const PROMPT_SUFFIX: Record<Mode, string> = {
   'dhcp-config': '(dhcp-config)#',
   'config-std-nacl': '(config-std-nacl)#',
   'config-ext-nacl': '(config-ext-nacl)#',
+  'config-arp-nacl': '(config-arp-nacl)#',
   'config-line': '(config-line)#',
 };
 
@@ -70,6 +73,7 @@ export class CliSession implements Shell, Session {
   currentOspf?: OspfProcess;
   currentPool?: DhcpPool;
   currentAcl?: Acl;
+  currentArpAcl?: ArpAcl;
   currentLine?: LineConfig;
   readonly io = new Interaction();
   readonly remote: boolean;
@@ -200,6 +204,7 @@ export class CliSession implements Shell, Session {
 
   private supports(c: Command): boolean {
     const isSwitch = this.device instanceof Switch;
+    if (/arp inspection|arp access-list|verify source|source binding|errdisable/.test(c.syntax)) return isSwitch;
     if (/switchport|vlan|mac address|trunk|default-gateway|ip routing|spanning-tree|channel|port-security|interfaces status/.test(c.syntax)) return isSwitch;
     if (/snooping/.test(c.syntax)) return isSwitch;
     if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|ipv6|standby/.test(c.syntax)) return !isSwitch;
@@ -472,6 +477,7 @@ const COMMANDS: Command[] = [
   ...IPV6_COMMANDS,
   ...MANAGEMENT_COMMANDS,
   ...HSRP_COMMANDS,
+  ...L2_SECURITY_COMMANDS,
 ];
 
 function target(dst: string): string {

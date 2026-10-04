@@ -64,6 +64,7 @@ export class LabRun {
     }
     for (const spec of lab.topology.devices) {
       const d = this.device(spec.hostname);
+      if (d instanceof Pc && spec.mac) d.nic.mac = spec.mac;
       if (d instanceof Pc && spec.ip && spec.ip !== 'dhcp') {
         const [address = '', len = '24'] = spec.ip.split('/');
         d.configure(address, parsePrefix(len), spec.gateway);

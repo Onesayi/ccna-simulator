@@ -22,7 +22,7 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 41 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
@@ -34,7 +34,7 @@ The **Labs** tab has 41 hands-on labs covering all five domains of the CCNA 200-
 ![A router-on-a-stick lab in progress: the lab sheet grades objectives live while the learner types into R1's console](docs/img/lab.png)
 
 <details>
-<summary>All 41 labs</summary>
+<summary>All 45 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -73,9 +73,13 @@ The **Labs** tab has 41 hands-on labs covering all five domains of the CCNA 200-
 | Recover a port shut by port security (troubleshooting) | 4.7.e, 2.4 |
 | Stop a rogue DHCP server with DHCP snooping | 4.7, 4.7.a |
 | Fix DHCP after snooping was turned on (troubleshooting) | 4.7.a, 1.7 |
+| Stop ARP poisoning with Dynamic ARP Inspection | 4.7, 4.7.b |
+| Let a static server past DAI with an ARP ACL (troubleshooting) | 4.7.b |
+| Pin addresses to ports with IP Source Guard | 4.7, 4.7.e |
 | Manage a switch over SSH only | 4.1 |
 | Read the logs (troubleshooting) | 5.6 |
 | Set the time with NTP | 5.6 |
+| Find the fault in a packet capture (troubleshooting) | 5.3, 1.6 |
 | Fix the office network (troubleshooting) | 1.6, 2.4, 3.2.b |
 | Capstone: build two sites from scratch | 2.1, 2.2, 3.2.b |
 | Capstone: branch to the internet | 1.7, 3.3, 4.3 |
@@ -96,13 +100,15 @@ The **Labs** tab has 41 hands-on labs covering all five domains of the CCNA 200-
 - **Port security**: maximum addresses, static, dynamic and sticky secure MACs, protect/restrict/shutdown violations, err-disabled ports and `show port-security`.
 - **HSRP**: versions 1 and 2, priority, preemption, interface tracking, the virtual MAC answering ARP, state changes in the log, and `show standby [brief]`.
 - **DHCP snooping**: trusted and untrusted ports, per-VLAN enablement, option 82 insertion, the binding table, and drops logged for rogue servers and spoofed client MACs.
+- **Dynamic ARP Inspection**: per-VLAN ARP inspection against the snooping bindings, trusted ports, ARP ACLs for static hosts, optional src-mac/dst-mac/IP validation, rate limiting with err-disable, and `show ip arp inspection`.
+- **IP Source Guard**: `ip verify source` filtering by source IP (and MAC with `port-security`) against the snooping bindings and static `ip source binding` entries, with err-disable recovery for ARP inspection.
 - **Device access**: `enable secret`, local users, `service password-encryption` (type 7), VTY and console lines with `login`/`login local` and `transport input`, RSA keys and SSH version 2, and working `telnet` and `ssh` sessions from PCs and IOS.
 - **NTP and the clock**: `clock set`, `clock timezone`, `ntp master` and `ntp server` with strata, `show clock`, `show ntp status|associations`, and `service timestamps log` on syslog messages.
 - **CDP and LLDP**: neighbor discovery on routers and switches with `show cdp|lldp neighbors [detail]`, per-port and global enable, and native VLAN mismatch warnings.
 - **IPv6**: global, EUI-64 and link-local addresses, Neighbor Discovery, router advertisements and SLAAC on PCs, `ipv6 unicast-routing`, static routes (including link-local next hops), ping and traceroute.
 - **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ipv6config` (static or SLAAC), `ping [-n count]`, `tracert`, `arp -a`, `telnet`, `ssh -l` and `curl`.
 - **IOS CLI**: mode hierarchy with abbreviations (`conf t`, `sh ip int br`), `?` help, `do` from config mode, `interface`, `interface range`, `ip address`, `encapsulation dot1q`, `ip route`, `ip routing`, VLAN and switchport commands, `ping`, `traceroute`, and `show running-config`, `ip route`, `ip arp`, `ip interface brief`, `vlan brief`, `mac address-table`, `interfaces trunk`, `interfaces <if> switchport`, plus `router ospf`, `ip dhcp pool`, `ip nat`, `access-list` and `ip access-list`, `spanning-tree`, `channel-group`, `switchport port-security` and the `ipv6` commands, with their `show` and `clear` commands. Output follows real IOS formatting, including the `.!!!!` first ping while ARP resolves.
-- A frame trace of every hop, ready for the packet capture panel.
+- **Packet capture**: click a cable to open a Wireshark-style panel showing every frame crossing it, with protocol, addresses and info, a layer-by-layer detail view, and display filters (`icmp`, `arp`, `ip.addr == ...`, `vlan == 10`, `!stp`).
 
 See [docs/design.md](docs/design.md) for the full feature map and roadmap.
 
@@ -142,8 +148,8 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | over 350 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, DHCP snooping, SSH, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
-| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, completing a lab end to end, hints, solutions and deep links. |
+| Engine | Vitest | over 400 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, completing a lab end to end, hints, solutions and deep links. |
 
 ```bash
 npm test              # engine unit tests
@@ -172,6 +178,7 @@ packages/engine   Simulation engine: pure TypeScript, no DOM, fully unit-tested
   src/devices     Device base class, IpDevice (shared IPv4 stack), Router, Switch, Pc
   src/cli         IOS command parser, show output formatters, PC command prompt
   src/labs        Lab format, grader checks, LabRun, progress tracking, and the lab catalog
+  src/capture     Frame dissection and display filters for the packet capture panel
   test/           Vitest specs, written as small labs
 apps/web          React + Vite front end: canvas, console, lab catalog and lab sheet, state stores
   e2e/            Playwright specs and the screenshot generator
@@ -192,7 +199,7 @@ Add the lab's id to the order in `catalog/index.ts` and `npm test` will prove it
 
 ## Roadmap
 
-Next up: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, NTP and SSH, plus the packet capture panel. See [docs/design.md](docs/design.md).
+Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH and the packet capture panel. Next up: VRRP/GLBP, AAA and more domain 5.0 operations labs. See [docs/design.md](docs/design.md).
 
 ## License
 

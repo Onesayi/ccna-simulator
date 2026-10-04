@@ -16,7 +16,7 @@ export type SwitchportMode = 'access' | 'trunk';
 export type InterfaceKind = 'physical' | 'subinterface' | 'svi' | 'loopback' | 'port-channel';
 
 /** Why a port was err-disabled. `shutdown` then `no shutdown` brings it back. */
-export type ErrDisableReason = 'bpduguard' | 'psecure-violation';
+export type ErrDisableReason = 'bpduguard' | 'psecure-violation' | 'arp-inspection';
 
 export type ChannelMode = 'on' | 'active' | 'passive' | 'desirable' | 'auto';
 
@@ -125,6 +125,10 @@ export interface Interface {
   dhcpSnooping?: { trust?: boolean; rateLimit?: number };
   /** `ip dhcp relay information trusted`: accept DHCP packets carrying option 82 without a relay address. */
   dhcpRelayTrusted?: boolean;
+  /** `ip arp inspection trust` and `ip arp inspection limit rate <pps> [burst interval <s>]` (`none` for no limit). */
+  arpInspection?: { trust?: boolean; rate?: number | 'none'; burst?: number };
+  /** `ip verify source`: IP Source Guard filters on the source IP, or on IP and MAC with `port-security`. */
+  sourceGuard?: 'ip' | 'ip-mac';
 }
 
 export interface HsrpGroupConfig {

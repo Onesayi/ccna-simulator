@@ -14,11 +14,18 @@ export interface Link {
 }
 
 export interface TraceEntry {
+  /** Frame number, counting from 1 since the topology was built. Keeps counting when old entries are trimmed. */
+  no: number;
   at: number;
+  /** The cable the frame crossed. */
+  link: string;
   from: string; // "SW1 Gi0/1"
   to: string;
   frame: Frame;
 }
+
+/** The trace keeps this many recent frames; older ones are dropped in chunks. */
+export const TRACE_LIMIT = 20_000;
 
 /** Owns devices, cables and the clock. The UI and the lab grader talk to the network through this. */
 export class Topology {
@@ -26,8 +33,9 @@ export class Topology {
   /** Keyed by `Device.id`, so renaming a device with `hostname` does not orphan it. */
   readonly devices = new Map<string, Device>();
   readonly links: Link[] = [];
-  /** Every frame that crossed a cable, in order. Feeds the packet capture panel. */
+  /** Recent frames that crossed a cable, in order (up to `TRACE_LIMIT`). Feeds the packet capture panel. */
   readonly trace: TraceEntry[] = [];
+  private framesSeen = 0;
 
   add<T extends Device>(device: T): T {
     if (this.find(device.hostname)) throw new Error(`Duplicate hostname ${device.hostname}`);
@@ -79,7 +87,8 @@ export class Topology {
     const to = link.a === from ? link.b : link.a;
     if (!to.isUp) return;
     this.scheduler.schedule(LINK_DELAY_MS, `${from.fullName} -> ${to.fullName}`, () => {
-      this.trace.push({ at: this.scheduler.now, from: from.fullName, to: to.fullName, frame });
+      this.trace.push({ no: ++this.framesSeen, at: this.scheduler.now, link: link.id, from: from.fullName, to: to.fullName, frame });
+      if (this.trace.length > TRACE_LIMIT + 1000) this.trace.splice(0, this.trace.length - TRACE_LIMIT);
       to.device.receive(to, frame);
     });
   }
