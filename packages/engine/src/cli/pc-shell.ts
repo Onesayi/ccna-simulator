@@ -5,6 +5,7 @@ import type { PingResult, TracerouteResult } from '../devices/ip-device';
 import { Pc } from '../devices/pc';
 import { CliSession } from './session';
 import { Interaction, beginLogin, parseSsh, type Shell } from './remote';
+import { SECURITY_LABEL } from '../wireless/wifi';
 
 const PC_HELP = `Available commands:
   ipconfig [/all]                        Show the IP configuration
@@ -22,6 +23,14 @@ const PC_HELP = `Available commands:
   ssh -l <user> <ip>                     Open an SSH session
   curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)
   arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)`;
+
+const WIFI_HELP = `
+Wi-Fi (laptops):
+  netsh wlan show networks               WLANs in range
+  netsh wlan connect ssid=<ssid> key=<passphrase>
+  netsh wlan connect ssid=<ssid> user=<name> password=<password>   (WPA2-Enterprise)
+  netsh wlan show interfaces             Connection state, SSID, BSSID and channel
+  netsh wlan disconnect                  Leave the network`;
 
 /** A Windows-flavoured command prompt for PCs, close to Packet Tracer's. */
 export class PcShell implements Shell {
@@ -47,14 +56,16 @@ export class PcShell implements Shell {
     return out;
   }
 
-  private run(line: string): string {
+  protected run(line: string): string {
     const [cmd = '', ...args] = line.trim().split(/\s+/);
     switch (cmd.toLowerCase()) {
       case '':
         return '';
       case '?':
       case 'help':
-        return PC_HELP;
+        return this.pc.wifi ? PC_HELP + WIFI_HELP : PC_HELP;
+      case 'netsh':
+        return this.netsh(args);
       case 'ipconfig':
         return this.ipconfigCommand(args);
       case 'ipv6config':
@@ -87,7 +98,7 @@ export class PcShell implements Shell {
       this.pc.renew();
       this.pc.network?.run();
       if (this.pc.dhcpState !== 'bound') {
-        return `${this.ipconfig(false)}\nAn error occurred while renewing interface Ethernet0 : unable to contact your DHCP server. Request has timed out.`;
+        return `${this.ipconfig(false)}\nAn error occurred while renewing interface ${this.pc.nic.name} : unable to contact your DHCP server. Request has timed out.`;
       }
       return this.ipconfig(false);
     }
@@ -99,10 +110,75 @@ export class PcShell implements Shell {
     return this.setIp(args);
   }
 
+  // ---------------------------------------------------------------- Wi-Fi
+
+  private netsh(args: string[]): string {
+    const wifi = this.pc.wifi;
+    const [ctx, verb, ...rest] = args.map((a, i) => (i < 2 ? a.toLowerCase() : a));
+    if (ctx !== 'wlan') return 'The following command was not found: netsh ' + args.join(' ');
+    if (!wifi) return 'There is no wireless interface on the system.';
+    if (verb === 'show' && rest[0]?.toLowerCase() === 'networks') return this.networks();
+    if (verb === 'show' && rest[0]?.toLowerCase() === 'interfaces') return this.wifiStatus();
+    if (verb === 'disconnect') {
+      wifi.disconnect();
+      this.pc.network?.run();
+      return 'Disconnection request was completed successfully for interface "Wireless0".';
+    }
+    if (verb === 'connect') {
+      const opts: Record<string, string> = {};
+      for (const a of rest) {
+        const at = a.indexOf('=');
+        if (at > 0) opts[a.slice(0, at).toLowerCase()] = a.slice(at + 1);
+      }
+      const ssid = opts.ssid ?? opts.name;
+      if (!ssid) return 'Usage: netsh wlan connect ssid=<ssid> [key=<passphrase>] [user=<name> password=<password>]';
+      wifi.connect({ ssid, key: opts.key, username: opts.user, password: opts.password });
+      this.pc.network?.run();
+      if (wifi.connected) return 'Connection request was completed successfully.';
+      const reason = wifi.reason ?? 'The access point did not answer.';
+      if (wifi.state !== 'disconnected') wifi.disconnect();
+      return `Unable to connect to "${ssid}". ${reason}`;
+    }
+    return 'Usage: netsh wlan show networks | show interfaces | connect ssid=<ssid> ... | disconnect';
+  }
+
+  private networks(): string {
+    const seen = new Map<string, { auth: string; cipher: string; bssids: string[] }>();
+    for (const b of this.pc.wifi!.scanAll()) {
+      const entry = seen.get(b.wlan.ssid) ?? { ...SECURITY_LABEL[b.wlan.security], bssids: [] };
+      entry.bssids.push(`${b.radio.mac} (${b.apName}, channel ${b.channel})`);
+      seen.set(b.wlan.ssid, entry);
+    }
+    const lines = ['', `Interface name : ${this.pc.nic.name}`, `There are ${seen.size} networks currently visible.`];
+    let n = 0;
+    for (const [ssid, e] of seen) {
+      lines.push('', `SSID ${++n} : ${ssid}`, '    Network type            : Infrastructure', `    Authentication          : ${e.auth}`, `    Encryption              : ${e.cipher}`);
+      e.bssids.forEach((b, k) => lines.push(`    BSSID ${k + 1}                 : ${b}`));
+    }
+    return lines.join('\n');
+  }
+
+  private wifiStatus(): string {
+    const w = this.pc.wifi!;
+    const lines = ['', 'There is 1 interface on the system:', '', `    Name                   : ${this.pc.nic.name}`, `    Physical address       : ${this.pc.nic.mac}`, `    State                  : ${w.connected ? 'connected' : w.state === 'disconnected' ? 'disconnected' : 'authenticating'}`];
+    if (w.connected && w.bss) {
+      lines.push(
+        `    SSID                   : ${w.bss.wlan.ssid}`,
+        `    BSSID                  : ${w.bss.radio.mac}`,
+        `    Authentication         : ${SECURITY_LABEL[w.bss.wlan.security].auth}`,
+        `    Cipher                 : ${SECURITY_LABEL[w.bss.wlan.security].cipher}`,
+        `    Radio type             : ${w.bss.radio.name.endsWith('0') ? '802.11n' : '802.11ac'}`,
+        `    Channel                : ${w.bss.channel}`,
+        `    Access point           : ${w.bss.apName}`,
+      );
+    } else if (w.reason) lines.push(`    Last error             : ${w.reason}`);
+    return lines.join('\n');
+  }
+
   private ipconfig(all: boolean): string {
     const pc = this.pc;
     const ip = pc.nic.ip;
-    const lines = ['', 'Ethernet0 Connection:(default port)', '', `   Connection-specific DNS Suffix..: ${pc.lease?.domain ?? ''}`];
+    const lines = ['', `${this.pc.nic.name} Connection:(default port)`, '', `   Connection-specific DNS Suffix..: ${pc.lease?.domain ?? ''}`];
     lines.push(`   Physical Address................: ${pc.nic.mac.toUpperCase()}`);
     lines.push(`   Link-local IPv6 Address.........: ${pc.ipv6.linkLocal(pc.nic).toUpperCase()}`);
     for (const a of pc.ipv6.globals(pc.nic)) lines.push(`   IPv6 Address....................: ${a.address.toUpperCase()}/${a.prefix}`);
@@ -187,7 +263,7 @@ export class PcShell implements Shell {
     return formatWindowsTracert(result);
   }
 
-  private connect(dst: string, port: number) {
+  protected connect(dst: string, port: number) {
     const result = this.pc.connect(dst, port);
     this.pc.network?.run();
     return result;
@@ -215,7 +291,7 @@ export class PcShell implements Shell {
     return beginLogin(this.io, this.pc, host, protocol, user, (device, privilege) => new CliSession(device, { remote: true, privilege }));
   }
 
-  private curl(args: string[]): string {
+  protected curl(args: string[]): string {
     const m = /^(?:(https?):\/\/)?([\d.]+)(?::(\d+))?\/?$/i.exec(args[0] ?? '');
     if (!m || !isValidIp(m[2]!)) return `curl: (3) URL using bad/illegal format or missing URL`;
     const host = m[2]!;
@@ -297,9 +373,4 @@ export function formatWindowsTracert(t: TracerouteResult): string {
   }
   lines.push('', 'Trace complete.', '');
   return lines.join('\n');
-}
-
-/** The right terminal for a device: a command prompt for PCs, the IOS CLI for everything else. */
-export function createShell(device: Device): Shell {
-  return device instanceof Pc ? new PcShell(device) : new CliSession(device);
 }

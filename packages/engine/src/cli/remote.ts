@@ -19,6 +19,8 @@ export interface Shell {
 export interface Pending {
   prompt: string;
   masked?: boolean;
+  /** Keep leading spaces (lines of a file being typed in). */
+  raw?: boolean;
   answer(line: string): string;
 }
 
@@ -31,7 +33,8 @@ export type OpenSession = (device: IosDevice, privilege: number) => Shell;
  */
 export class Interaction {
   pending?: Pending;
-  remote?: { shell: Shell; host: string };
+  /** A telnet or SSH session; `onClose` runs when it ends (AAA accounting stop). */
+  remote?: { shell: Shell; host: string; onClose?: () => void };
 
   get active(): boolean {
     return this.pending !== undefined || this.remote !== undefined;
@@ -49,8 +52,8 @@ export class Interaction {
     return this.remote ? Boolean(this.remote.shell.instantHelp) : !this.pending;
   }
 
-  ask(prompt: string, answer: (line: string) => string, masked = false): void {
-    this.pending = { prompt, masked, answer };
+  ask(prompt: string, answer: (line: string) => string, masked = false, raw = false): void {
+    this.pending = { prompt, masked, raw, answer };
   }
 
   execute(line: string): string {
@@ -58,12 +61,13 @@ export class Interaction {
       const { shell, host } = this.remote;
       const out = shell.execute(line);
       if (!shell.closed) return out;
+      this.remote.onClose?.();
       this.remote = undefined;
       return [out, `\n[Connection to ${host} closed by foreign host]`].filter(Boolean).join('\n');
     }
     const p = this.pending!;
     this.pending = undefined;
-    return p.answer(line.trim());
+    return p.answer(p.raw ? line.replace(/\r$/, '') : line.trim());
   }
 }
 
@@ -85,13 +89,15 @@ export function beginLogin(io: Interaction, from: IpDevice, host: string, protoc
   if (!target) return `${lead}${closed.trimStart()}`;
   const mgmt = target.mgmt;
   const finish = (user: string | undefined, password: string | undefined): string => {
-    const result = mgmt.authenticate(protocol, user, password);
+    const result = target.login('vty', protocol, user, password);
     if (!result.ok) return `${result.reason}\n${closed}`;
-    io.remote = { shell: open(target, result.privilege), host };
+    const onClose = target.aaa.newModel ? () => target.aaa.account('stop', user) : undefined;
+    io.remote = { shell: open(target, result.privilege), host, onClose };
     return '';
   };
-  const steps = mgmt.prompts(protocol);
-  if (protocol === 'telnet' && mgmt.vty.login === 'line' && mgmt.vty.password === undefined) return `${lead}Password required, but none set\n${closed}`;
+  const steps = target.loginPrompts('vty', protocol);
+  const lineOnly = !target.aaa.newModel && mgmt.vty.login === 'line';
+  if (protocol === 'telnet' && lineOnly && mgmt.vty.password === undefined) return `${lead}Password required, but none set\n${closed}`;
   const askPassword = (user: string | undefined) => io.ask('Password: ', (pw) => finish(user, pw), true);
   if (!steps.length) return `${lead}${finish(username, undefined)}`;
   if (steps[0] === 'username') {

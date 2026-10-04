@@ -10,26 +10,42 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import { Switch, shortName, type Device, type Interface } from '@ccna-sim/engine';
+import { LightweightAp, Pc, Switch, WirelessController, shortName, type Device, type Interface } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
-const ICON: Record<Device['kind'], string> = { pc: '🖥️', switch: '🔀', router: '📡' };
+const ICON: Record<Device['kind'], string> = { pc: '🖥️', server: '🗄️', switch: '🔀', router: '📡', wlc: '🎛️', ap: '📶' };
+
+function icon(d: Device): string {
+  return d instanceof Pc && d.wifi ? '💻' : ICON[d.kind];
+}
+
+/** The small grey line under a node's name. */
+function subtitle(d: Device): string | undefined {
+  if (d instanceof LightweightAp) return d.controller ? `joined ${d.controller.name}` : d.nic.ip && !d.apipa ? 'not joined' : 'no IP';
+  if (d instanceof WirelessController) return d.management.ip ? d.management.ip.address : 'no mgmt IP';
+  if (d instanceof Pc) {
+    const addr = d.nic.ip;
+    const v6 = d.nic.ipv6?.addresses[0];
+    if (d.wifi && !d.wifi.connected) return 'Wi-Fi off';
+    return addr ? `${addr.address}/${addr.prefix}` : v6 ? `${v6.address}/${v6.prefix}` : 'no IP';
+  }
+  return undefined;
+}
 
 type DeviceNode = Node<{ device: Device }, 'device'>;
 
 function DeviceNodeView({ data, selected }: NodeProps<DeviceNode>) {
   const d = data.device;
-  const addr = d.interfaces.find((i) => i.ip)?.ip;
-  const v6 = d.kind === 'pc' ? d.interfaces[0]?.ipv6?.addresses[0] : undefined;
+  const sub = subtitle(d);
   return (
     <div className={`device-node ${d.kind}${selected ? ' selected' : ''}`}>
       <Handle type="source" position={Position.Top} id="t" />
       <Handle type="source" position={Position.Bottom} id="b" />
       <Handle type="source" position={Position.Left} id="l" />
       <Handle type="source" position={Position.Right} id="r" />
-      <span className="icon">{ICON[d.kind]}</span>
+      <span className="icon">{icon(d)}</span>
       <span className="name">{d.hostname}</span>
-      {d.kind === 'pc' && <span className="addr">{addr ? `${addr.address}/${addr.prefix}` : v6 ? `${v6.address}/${v6.prefix}` : 'no IP'}</span>}
+      {sub && <span className="addr">{sub}</span>}
     </div>
   );
 }
@@ -86,6 +102,23 @@ export function TopologyCanvas() {
         data: { up, blocked },
       };
     });
+    // Wi-Fi: a dashed line from each associated laptop to its AP. Clicking it captures that AP's air.
+    for (const d of topology.devices.values()) {
+      const bss = d instanceof Pc && d.wifi?.connected ? d.wifi.bss : undefined;
+      if (!bss) continue;
+      const ap = bss.radio.device;
+      const [sh, th] = handles(positions.get(d.id) ?? { x: 0, y: 0 }, positions.get(ap.id) ?? { x: 0, y: 0 });
+      edges.push({
+        id: `air:${ap.id}:${d.id}`,
+        source: d.id,
+        target: ap.id,
+        sourceHandle: sh,
+        targetHandle: th,
+        label: `${bss.wlan.ssid} · ch ${bss.channel}`,
+        className: ['link-air', capture.open && capture.link === `air:${ap.id}` && 'link-captured'].filter(Boolean).join(' '),
+        deletable: false,
+      });
+    }
     return { nodes, edges };
     // `version` is the signal that engine state changed underneath the same topology object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,7 +140,7 @@ export function TopologyCanvas() {
       }}
       onConnect={(c) => connect(c.source, c.target)}
       onNodesDelete={(ns) => ns.forEach((n) => removeDevice(n.id))}
-      onEdgeClick={(_, e) => openCapture(e.id)}
+      onEdgeClick={(_, e) => openCapture(e.id.startsWith('air:') ? e.id.split(':').slice(0, 2).join(':') : e.id)}
       onEdgesDelete={(es) => es.forEach((e) => disconnect(e.id))}
       deleteKeyCode="Delete"
       fitView

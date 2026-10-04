@@ -4,7 +4,7 @@ import { protocolOf } from './dissect';
 export type FramePredicate = (frame: Frame) => boolean;
 
 /** Words a filter accepts on their own, like Wireshark's protocol filters. */
-const PROTOCOLS = ['arp', 'icmp', 'tcp', 'udp', 'dhcp', 'hsrp', 'ntp', 'ospf', 'icmpv6', 'stp', 'lacp', 'pagp', 'cdp', 'lldp'];
+const PROTOCOLS = ['arp', 'icmp', 'tcp', 'udp', 'dhcp', 'hsrp', 'ntp', 'ospf', 'icmpv6', 'stp', 'lacp', 'pagp', 'cdp', 'lldp', 'radius', 'tacacs', 'snmp', 'capwap', 'eapol', 'wlan'];
 
 const FIELDS = ['ip.addr', 'ip.src', 'ip.dst', 'eth.addr', 'eth.src', 'eth.dst', 'vlan', 'vlan.id', 'tcp.port', 'udp.port'];
 
@@ -13,6 +13,9 @@ function protocolMatch(word: string): FramePredicate {
   if (word === 'ip') return (f) => ['icmp', 'tcp', 'udp', 'ospf'].includes(f.payload.kind);
   if (word === 'ipv6') return (f) => f.payload.kind === 'icmpv6';
   if (word === 'vlan') return (f) => f.vlan !== undefined;
+  if (word === 'tacacs') return (f) => f.payload.kind === 'tcp' && f.payload.tacacs !== undefined;
+  if (word === 'capwap') return (f) => f.payload.kind === 'udp' && f.payload.capwap !== undefined;
+  if (word === 'wlan') return (f) => f.payload.kind === 'dot11';
   return (f) => protocolOf(f.payload).toLowerCase() === word;
 }
 
@@ -129,5 +132,6 @@ export function isKeepalive(f: Frame): boolean {
   const p = f.payload;
   if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp' || p.kind === 'cdp' || p.kind === 'lldp') return true;
   if (p.kind === 'ospf') return p.ospf.type === 'hello';
+  if (p.kind === 'udp' && p.capwap) return p.capwap.type === 'echo-request' || p.capwap.type === 'echo-response';
   return p.kind === 'udp' && (p.hsrp !== undefined || p.ntp !== undefined);
 }

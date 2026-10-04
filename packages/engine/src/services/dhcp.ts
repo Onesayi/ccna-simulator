@@ -14,6 +14,8 @@ export interface DhcpPool {
   defaultRouter?: Ipv4Address;
   dns?: Ipv4Address;
   domain?: string;
+  /** `option 43 hex f104.<ip>`: tells Cisco lightweight APs where their controller is. */
+  option43?: string;
   leaseDays: number;
 }
 
@@ -63,6 +65,7 @@ export class DhcpServer {
       prefix: pool.prefix,
       router: pool.defaultRouter,
       dns: pool.dns,
+      option43: pool.option43,
       domain: pool.domain,
       leaseDays: pool.leaseDays,
     });

@@ -11,6 +11,8 @@ import { ospfLabs } from './ospf';
 import { routingLabs } from './routing';
 import { serviceLabs } from './services';
 import { switchingLabs } from './switching';
+import { wirelessLabs } from './wireless';
+import { managementLabs } from './management';
 
 /** Suggested study order: fundamentals, switching, routing, services, then the mixed troubleshooting and capstone labs. */
 const ORDER = [
@@ -52,16 +54,27 @@ const ORDER = [
   'dynamic-arp-inspection',
   'dai-arp-acl',
   'ip-source-guard',
+  'wlan-wpa2-psk',
+  'ap-join-option43',
+  'wireless-channels',
+  'wlan-enterprise-guest',
+  'wireless-troubleshoot',
   'ssh-remote-access',
+  'aaa-tacacs',
+  'aaa-radius-troubleshoot',
   'syslog-read',
   'ntp-clock',
+  'snmp-v2c-traps',
+  'snmpv3-secure',
+  'restconf-api',
+  'ansible-playbook',
   'capture-the-fault',
   'fix-the-office',
   'capstone-two-sites',
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs, ...wirelessLabs, ...managementLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),

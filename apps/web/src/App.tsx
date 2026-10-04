@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { findLab } from '@ccna-sim/engine';
+import { WirelessController, findLab } from '@ccna-sim/engine';
 import { TopologyCanvas } from './components/TopologyCanvas';
 import { DeviceTerminal } from './components/DeviceTerminal';
 import { LabCatalog } from './components/LabCatalog';
 import { LabPanel } from './components/LabPanel';
 import { CapturePanel } from './components/CapturePanel';
+import { WlcPanel } from './components/WlcPanel';
 import { useNetwork } from './state/network';
 import { useStudy } from './state/study';
 
@@ -27,6 +28,7 @@ export function App() {
   useNetwork((s) => s.version);
   const { run, start, exit } = useStudy();
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
+  const [gui, setGui] = useState(false);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash(window.location.hash));
@@ -65,6 +67,10 @@ export function App() {
             <button onClick={() => addDevice('router')}>+ Router</button>
             <button onClick={() => addDevice('switch')}>+ Switch</button>
             <button onClick={() => addDevice('pc')}>+ PC</button>
+            <button onClick={() => addDevice('laptop')}>+ Laptop</button>
+            <button onClick={() => addDevice('server')}>+ Server</button>
+            <button onClick={() => addDevice('wlc')}>+ WLC</button>
+            <button onClick={() => addDevice('ap')}>+ AP</button>
             <span className="sep" />
             <button onClick={loadDemo}>Load demo</button>
             <button onClick={() => window.confirm('Start from an empty canvas?') && clear()}>Clear</button>
@@ -109,9 +115,14 @@ export function App() {
                   <span>
                     {selected.hostname} <small>{selected.kind}</small>
                   </span>
+                  {selected instanceof WirelessController && (
+                    <button aria-pressed={gui} onClick={() => setGui(!gui)}>
+                      {gui ? 'CLI' : 'Web GUI'}
+                    </button>
+                  )}
                   {!inLab && <button onClick={() => removeDevice(selected.id)}>Delete device</button>}
                 </div>
-                <DeviceTerminal key={selected.id} device={selected} />
+                {selected instanceof WirelessController && gui ? <WlcPanel wlc={selected} /> : <DeviceTerminal key={selected.id} device={selected} />}
               </>
             ) : inLab ? (
               <div className="empty">

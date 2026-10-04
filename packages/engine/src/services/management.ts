@@ -13,6 +13,10 @@ export interface LineConfig {
   transport: Set<Transport>;
   execTimeout?: [number, number];
   loggingSynchronous?: boolean;
+  /** `login authentication <list>`: an AAA method list instead of the default one. */
+  authList?: string;
+  /** `authorization exec <list>`. */
+  authorList?: string;
 }
 
 export interface LocalUser {
@@ -85,6 +89,17 @@ export class Management {
     return this.vty.password === password ? { ok: true, privilege: 1 } : { ok: false, reason: '% Login invalid' };
   }
 
+  /** Checks a console login without AAA: the line password, the local users, or nothing. */
+  authenticateConsole(username: string | undefined, password: string | undefined): LoginResult {
+    const c = this.console;
+    if (c.login === 'local') {
+      const u = username ? this.users.get(username) : undefined;
+      return u && u.password === password ? { ok: true, privilege: u.privilege } : { ok: false, reason: '% Login invalid' };
+    }
+    if (c.login === 'line' && c.password !== undefined) return c.password === password ? { ok: true, privilege: 1 } : { ok: false, reason: '% Login invalid' };
+    return { ok: true, privilege: 1 };
+  }
+
   /** The password `enable` asks for, if any: the secret wins over the plain password. */
   get enableRequired(): string | undefined {
     return this.enableSecret ?? this.enablePassword;
@@ -114,6 +129,8 @@ export class Management {
       if (l.loggingSynchronous) out.push(' logging synchronous');
       if (l.login === 'line' && (vty || l.password !== undefined)) out.push(' login');
       if (l.login === 'local') out.push(' login local');
+      if (l.authorList) out.push(` authorization exec ${l.authorList}`);
+      if (l.authList) out.push(` login authentication ${l.authList}`);
       if (vty && !(l.transport.size === 2)) out.push(` transport input ${l.transport.size === 0 ? 'none' : [...l.transport].join(' ')}`);
       return out;
     };

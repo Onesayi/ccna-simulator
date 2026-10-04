@@ -24,7 +24,99 @@ export interface TcpPacket extends IpHeader {
   kind: 'tcp';
   srcPort: number;
   dstPort: number;
-  flags: 'syn' | 'syn-ack' | 'rst';
+  flags: 'syn' | 'syn-ack' | 'rst' | 'psh';
+  /** A data segment (`psh`) carrying TACACS+. The simulator skips the handshake for these. */
+  tacacs?: TacacsMessage;
+}
+
+/**
+ * TACACS+ (TCP 49). The whole body is encrypted with the shared key, so a capture shows only the
+ * header. `key` is the key the sender used; a server with a different key cannot read the body.
+ */
+export interface TacacsMessage {
+  type: 'authen' | 'author' | 'acct';
+  session: number;
+  /** Requests carry the user; replies carry the status. */
+  username?: string;
+  password?: string;
+  status?: 'pass' | 'fail' | 'error' | 'success';
+  /** Authorization replies: `priv-lvl` for an EXEC shell. */
+  privilege?: number;
+  /** Accounting: start or stop record. */
+  record?: 'start' | 'stop';
+  key: string;
+}
+
+/**
+ * RADIUS (UDP 1812 for authentication, 1813 for accounting). Only the password is hidden with the
+ * shared secret; the user name and attributes travel in clear text.
+ */
+export interface RadiusMessage {
+  code: 'access-request' | 'access-accept' | 'access-reject' | 'accounting-request' | 'accounting-response';
+  id: number;
+  username?: string;
+  password?: string;
+  /** Access-Accept: Cisco-AVPair `shell:priv-lvl=N`. */
+  privilege?: number;
+  /** Accounting-Request: Acct-Status-Type. */
+  record?: 'start' | 'stop';
+  /** NAS-Port-Type: a VTY login, or a wireless client authenticating with 802.1X. */
+  portType?: 'Virtual' | 'Wireless-802.11';
+  /** The secret the sender signed with (the Request/Response Authenticator stands in for it). */
+  key: string;
+}
+
+/** An SNMP variable binding: an OID and, in responses and sets, its value. */
+export interface SnmpVarbind {
+  oid: string;
+  type?: 'INTEGER' | 'STRING' | 'OID' | 'Timeticks' | 'Counter32' | 'Gauge32' | 'IpAddress' | 'Hex-STRING' | 'noSuchObject' | 'endOfMibView';
+  value?: string | number;
+}
+
+/** SNMP over UDP 161 (requests) and 162 (traps). */
+export interface SnmpMessage {
+  version: '1' | '2c' | '3';
+  pdu: 'get' | 'getnext' | 'set' | 'response' | 'trap' | 'report';
+  requestId: number;
+  /** v1/v2c: the community string, sent in clear text. */
+  community?: string;
+  /** v3 (USM): the user, security level and the passwords the sender keyed with. */
+  user?: string;
+  level?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
+  authKey?: string;
+  privKey?: string;
+  varbinds: SnmpVarbind[];
+  error?: 'noError' | 'noSuchName' | 'noAccess' | 'badValue' | 'notWritable' | 'wrongValue';
+  /** v3 reports: why the agent refused the request. */
+  report?: 'unknownUserName' | 'wrongDigest' | 'unsupportedSecLevel';
+}
+
+/**
+ * CAPWAP between a lightweight AP and its controller: control messages on UDP 5246 (discovery,
+ * join, echo), and client traffic tunneled on UDP 5247 with the client's frame inside.
+ */
+/** The security a WLAN asks for, as clients see it in beacons. */
+export type WlanSecurity = 'open' | 'wpa2-psk' | 'wpa3-sae' | 'wpa2-enterprise';
+
+/** A WLAN as the controller pushes it to its APs, which beacon it. */
+export interface WlanAdvert {
+  id: number;
+  ssid: string;
+  security: WlanSecurity;
+}
+
+export interface CapwapMessage {
+  type: 'discovery-request' | 'discovery-response' | 'join-request' | 'join-response' | 'echo-request' | 'echo-response' | 'data';
+  apName?: string;
+  wlcName?: string;
+  /** The controller's management address, in discovery responses. */
+  wlcIp?: string;
+  /** Join and echo responses: the WLANs to beacon and the radio channels (2.4 GHz, 5 GHz) to use. */
+  wlans?: WlanAdvert[];
+  channels?: [number, number];
+  /** Data: the wireless client the frame is from or to, and the 802.11 or Ethernet frame itself. */
+  client?: MacAddress;
+  inner?: Frame;
 }
 
 export interface DhcpMessage {
@@ -47,6 +139,8 @@ export interface DhcpMessage {
   leaseDays?: number;
   /** Relay agent information (option 82), inserted by a DHCP snooping switch. */
   option82?: { circuitId: string; remoteId: string };
+  /** Vendor-specific option 43, as hex: Cisco APs read their controller addresses from it. */
+  option43?: string;
 }
 
 /** An HSRP hello (UDP 1985). Active and standby routers send one every hello interval. */
@@ -76,6 +170,9 @@ export interface UdpPacket extends IpHeader {
   dhcp?: DhcpMessage;
   hsrp?: HsrpMessage;
   ntp?: NtpMessage;
+  radius?: RadiusMessage;
+  snmp?: SnmpMessage;
+  capwap?: CapwapMessage;
 }
 
 // ---------------------------------------------------------------- OSPF
@@ -260,8 +357,35 @@ export interface Icmpv6Packet {
   original?: Icmpv6Packet;
 }
 
+// ---------------------------------------------------------------- 802.11
+
+/**
+ * 802.11 management frames and EAPOL between a wireless client and its AP. With a lightweight
+ * AP these are relayed to the controller inside CAPWAP, which makes every decision (split MAC).
+ */
+export interface Dot11Frame {
+  kind: 'dot11';
+  subtype: 'auth' | 'assoc-request' | 'assoc-response' | 'deauth' | 'eapol-key' | 'eap';
+  /** Authentication: open system, or WPA3's SAE (the password is proven without being sent). */
+  algorithm?: 'open' | 'sae';
+  ssid?: string;
+  /** 0 is success; other values are IEEE status or reason codes. */
+  status?: number;
+  reason?: string;
+  /** Association request: the security the client offers. */
+  akm?: 'none' | 'psk' | 'sae' | '802.1x';
+  /** EAPOL-Key: message 1 to 4 of the 4-way handshake. */
+  message?: 1 | 2 | 3 | 4;
+  /** EAPOL-Key message 2: a MIC derived from the client's key; SAE: the password-derived commit. */
+  mic?: string;
+  /** EAP: identity request or response, credentials (stands in for PEAP), success or failure. */
+  eap?: 'request-identity' | 'response-identity' | 'credentials' | 'success' | 'failure';
+  identity?: string;
+  password?: string;
+}
+
 /** Layer 3 payloads the engine understands. New protocols extend this union. */
-export type Packet = ArpPacket | IpPacket | Icmpv6Packet | BpduPacket | ChannelPdu | DiscoveryPdu;
+export type Packet = ArpPacket | IpPacket | Icmpv6Packet | BpduPacket | ChannelPdu | DiscoveryPdu | Dot11Frame;
 
 /** An Ethernet II frame, optionally carrying an 802.1Q tag while on a trunk. */
 export interface Frame {

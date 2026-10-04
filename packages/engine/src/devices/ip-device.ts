@@ -7,7 +7,7 @@ import {
   type Ipv4Address,
   type MacAddress,
 } from '../core/addressing';
-import type { ArpPacket, Frame, IpPacket, Packet, UdpPacket } from '../core/frames';
+import type { ArpPacket, Frame, IpPacket, Packet, TcpPacket, UdpPacket } from '../core/frames';
 import type { ScheduledEvent } from '../core/scheduler';
 import { Ipv6Stack } from '../ipv6/stack';
 import { Device, type Interface } from './device';
@@ -239,8 +239,11 @@ export abstract class IpDevice extends Device {
     return false;
   }
 
-  /** UDP addressed to us (NTP). */
+  /** UDP addressed to us (NTP, RADIUS, SNMP, CAPWAP). */
   protected handleUdp(_p: UdpPacket): void {}
+
+  /** A TCP data segment addressed to us (TACACS+). */
+  protected handleTcpData(_p: TcpPacket): void {}
 
   /** Addresses we answer ARP for besides our own, such as NAT global addresses. */
   protected answersArpFor(_iface: Interface, _ip: Ipv4Address): boolean {
@@ -461,7 +464,7 @@ export abstract class IpDevice extends Device {
   protected receiveL3(iface: Interface, frame: Frame): void {
     const p = frame.payload;
     if (p.kind === 'icmpv6') return this.ipv6.receive(iface, p, frame);
-    if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp' || p.kind === 'cdp' || p.kind === 'lldp') return; // link-local protocols
+    if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp' || p.kind === 'cdp' || p.kind === 'lldp' || p.kind === 'dot11') return; // link-local protocols
     const multicast = this.acceptsMulticast(frame.dst, iface);
     if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !multicast && !this.acceptsMac(frame.dst, iface)) return;
     if (p.kind === 'arp') return this.handleArp(iface, p);
@@ -491,6 +494,7 @@ export abstract class IpDevice extends Device {
       return this.resolveWaiter(o?.kind === 'tcp' ? `tcp:${o.srcPort}` : `icmp:${p.id}:${p.seq}`, p);
     }
     if (p.kind === 'tcp') {
+      if (p.flags === 'psh') return this.handleTcpData(p);
       if (p.flags !== 'syn') return this.resolveWaiter(`tcp:${p.dstPort}`, p);
       const flags = this.listeningPorts.includes(p.dstPort) ? 'syn-ack' : 'rst';
       return this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: this.initialTtl, srcPort: p.dstPort, dstPort: p.srcPort, flags });
@@ -527,12 +531,15 @@ export abstract class IpDevice extends Device {
     const entry = this.arpTable.get(arpTarget);
     if (entry && entry.iface === iface) return this.transmitL3(iface, entry.mac, p);
 
+    // Protocols with their own retransmission (TACACS+ over TCP, RADIUS, SNMP, CAPWAP) survive
+    // the dropped first packet on IOS, so they wait for ARP here instead of modeling retries.
+    const hold = this.queueDuringArp || (p.kind === 'tcp' && p.tacacs !== undefined) || (p.kind === 'udp' && (p.radius ?? p.snmp ?? p.capwap) !== undefined);
     const queue = this.pendingArp.get(arpTarget);
     if (queue) {
-      if (this.queueDuringArp) queue.push(p);
+      if (hold) queue.push(p);
       return;
     }
-    this.pendingArp.set(arpTarget, this.queueDuringArp ? [p] : []);
+    this.pendingArp.set(arpTarget, hold ? [p] : []);
     const ip = iface.ip!;
     this.transmitL3(iface, BROADCAST_MAC, {
       kind: 'arp',

@@ -183,6 +183,8 @@ export function runningConfig(d: Device & IpDevice): string {
   if (ios) {
     const access = ios.mgmt.globalConfig().filter((l) => l !== 'service password-encryption');
     if (access.length) out.push(...access, '!');
+    const aaa = ios.aaa.config();
+    if (aaa.length) out.push(...aaa, '!');
     const tz = ios.ntp.config().filter((l) => l.startsWith('clock'));
     if (tz.length) out.push(...tz, '!');
     const discovery = [...(ios.discovery.cdpEnabled ? [] : ['no cdp run']), ...(ios.discovery.lldpEnabled ? ['lldp run'] : [])];
@@ -232,6 +234,7 @@ export function runningConfig(d: Device & IpDevice): string {
       if (pool.defaultRouter) out.push(` default-router ${pool.defaultRouter}`);
       if (pool.dns) out.push(` dns-server ${pool.dns}`);
       if (pool.domain) out.push(` domain-name ${pool.domain}`);
+      if (pool.option43) out.push(` option 43 hex ${pool.option43}`);
       if (pool.leaseDays !== 1) out.push(` lease ${pool.leaseDays}`);
       out.push('!');
     }
@@ -325,6 +328,17 @@ export function runningConfig(d: Device & IpDevice): string {
         for (const e of acl.entries) out.push(` ${e.action === 'remark' ? '' : `${e.seq} `}${formatAclEntry(e, acl.type, true)}`);
       }
     }
+  }
+  if (ios) {
+    const http = [
+      ...(ios.http.server ? ['ip http server'] : []),
+      ...(ios.http.authLocal ? ['ip http authentication local'] : []),
+      ...(ios.http.secure ? ['ip http secure-server'] : []),
+    ];
+    if (http.length) out.push('!', ...http);
+    const snmp = ios.snmp.config();
+    if (snmp.length) out.push('!', ...snmp);
+    if (ios.http.restconf) out.push('!', 'restconf');
   }
   out.push('!', ...(ios ? ios.mgmt.lineConfig() : ['line con 0', '!', 'line vty 0 4', ' login']), '!');
   const ntp = ios?.ntp.config().filter((l) => l.startsWith('ntp')) ?? [];

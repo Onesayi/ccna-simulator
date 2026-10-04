@@ -22,11 +22,11 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 56 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
-- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, HSRP states and virtual IPs, DHCP snooping trust and bindings, SSH and VTY settings, NTP sync and time zones, CDP and LLDP neighbors, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
+- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, HSRP states and virtual IPs, DHCP snooping trust and bindings, SSH and VTY settings, AAA method lists and logins, SNMP communities, users and traps, RESTCONF responses, WLANs, AP joins and wireless clients, NTP sync and time zones, CDP and LLDP neighbors, and real pings, traceroutes and TCP connections. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
 - **Hints, quizzes and solutions.** Objectives carry optional hints, labs include multiple-choice questions on the theory behind them, and every lab has a model answer you can reveal.
 - **Progress tracking.** Completion, checks and hints used are saved in your browser, and the catalog shows progress per blueprint domain.
 - **Shareable links.** Each lab has its own URL, such as `#/labs/floating-static`.
@@ -34,7 +34,7 @@ The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-
 ![A router-on-a-stick lab in progress: the lab sheet grades objectives live while the learner types into R1's console](docs/img/lab.png)
 
 <details>
-<summary>All 45 labs</summary>
+<summary>All 56 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -76,9 +76,20 @@ The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-
 | Stop ARP poisoning with Dynamic ARP Inspection | 4.7, 4.7.b |
 | Let a static server past DAI with an ARP ACL (troubleshooting) | 4.7.b |
 | Pin addresses to ports with IP Source Guard | 4.7, 4.7.e |
+| Build a WPA2-Personal WLAN | 1.5, 1.6 |
+| Help an AP find its controller (troubleshooting) | 1.5, 1.7 |
+| Plan the channels (troubleshooting) | 1.5 |
+| WPA2-Enterprise for staff, WPA3 for guests | 1.5, 1.6, 4.1 |
+| Connected, but no network (troubleshooting) | 1.5, 1.6, 2.1 |
 | Manage a switch over SSH only | 4.1 |
+| Central logins with TACACS+ | 4.1 |
+| RADIUS logins that never work (troubleshooting) | 4.1 |
 | Read the logs (troubleshooting) | 5.6 |
 | Set the time with NTP | 5.6 |
+| Monitor a router with SNMP | 5.4 |
+| Replace SNMPv2c with SNMPv3 (troubleshooting) | 5.4, 4.1 |
+| Read and change a router with RESTCONF | 5.3 |
+| Configure two routers with Ansible (troubleshooting) | 5.5, 5.3 |
 | Find the fault in a packet capture (troubleshooting) | 5.3, 1.6 |
 | Fix the office network (troubleshooting) | 1.6, 2.4, 3.2.b |
 | Capstone: build two sites from scratch | 2.1, 2.2, 3.2.b |
@@ -90,7 +101,7 @@ The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-
 
 ![SW1 showing its VLANs and 802.1Q trunk from the IOS console](docs/img/vlan-cli.png)
 
-- **Topology canvas**: add routers, switches and PCs, drag between devices to cable them, click a cable to remove it. Cables turn red and dashed while either end is down, orange and dotted where spanning tree blocks them, and thick when bundled into a port-channel. A demo network (two sites, router-on-a-stick, static routes) loads on start.
+- **Topology canvas**: add routers, switches, PCs, Wi-Fi laptops, Linux servers, wireless LAN controllers and access points, drag between devices to cable them, click a cable to remove it. Cables turn red and dashed while either end is down, orange and dotted where spanning tree blocks them, and thick when bundled into a port-channel. A demo network (two sites, router-on-a-stick, static routes) loads on start.
 - **Routers**: GigabitEthernet ports that start shut down (a link only comes up when both ends are enabled), loopbacks, 802.1Q sub-interfaces for router-on-a-stick, connected and local routes, static routes by next hop and/or exit interface, default routes, floating statics (administrative distance), proxy ARP, TTL expiry and ICMP unreachables.
 - **OSPFv2 (single area)**: hellos, neighbor states, DR/BDR election that never preempts, router and network LSAs, SPF with equal-cost paths, router ID selection, passive interfaces, point-to-point links, cost from bandwidth, `default-information originate`, and the log messages for adjacency changes, duplicate router IDs and area mismatches.
 - **IP services**: a DHCP server with pools and excluded ranges, DHCP relay (`ip helper-address`), DHCP clients on PCs and router ports; static NAT, dynamic NAT and PAT; numbered and named standard and extended ACLs with per-line match counters; telnet and TCP port checks for testing filters; and a syslog buffer (`show logging`).
@@ -108,6 +119,10 @@ The **Labs** tab has 45 hands-on labs covering all five domains of the CCNA 200-
 - **IPv6**: global, EUI-64 and link-local addresses, Neighbor Discovery, router advertisements and SLAAC on PCs, `ipv6 unicast-routing`, static routes (including link-local next hops), ping and traceroute.
 - **PCs**: a Packet Tracer style command prompt with `ipconfig` (including `/renew`, `/release` and DHCP), `ipv6config` (static or SLAAC), `ping [-n count]`, `tracert`, `arp -a`, `telnet`, `ssh -l` and `curl`.
 - **IOS CLI**: mode hierarchy with abbreviations (`conf t`, `sh ip int br`), `?` help, `do` from config mode, `interface`, `interface range`, `ip address`, `encapsulation dot1q`, `ip route`, `ip routing`, VLAN and switchport commands, `ping`, `traceroute`, and `show running-config`, `ip route`, `ip arp`, `ip interface brief`, `vlan brief`, `mac address-table`, `interfaces trunk`, `interfaces <if> switchport`, plus `router ospf`, `ip dhcp pool`, `ip nat`, `access-list` and `ip access-list`, `spanning-tree`, `channel-group`, `switchport port-security` and the `ipv6` commands, with their `show` and `clear` commands. Output follows real IOS formatting, including the `.!!!!` first ping while ARP resolves.
+- **Wireless**: an AireOS-style wireless LAN controller with its own CLI and a web GUI page, lightweight APs that find it by broadcast, a primed controller or DHCP option 43 and join over CAPWAP, WLANs mapped to VLANs through dynamic interfaces, open, WPA2-Personal, WPA3-SAE and WPA2-Enterprise (RADIUS) security, automatic channel assignment, and laptops that join with `netsh wlan connect`. Client traffic is tunnelled to the controller (split MAC), which the capture panel shows as CAPWAP-Data.
+- **AAA**: `aaa new-model` with login authentication, EXEC authorization and accounting method lists, RADIUS and TACACS+ servers and groups, local fallback, and a server-side AAA daemon with users, clients and a live log.
+- **SNMP**: v2c communities with ACLs and v3 users and groups (noAuth, auth, priv) on routers and switches, a MIB-II subset, linkUp/linkDown traps, and `snmpget`, `snmpwalk` and `snmpset` on the Linux server.
+- **Automation**: RESTCONF over `curl` (ietf-interfaces and the hostname as JSON, with GET, PATCH, PUT, POST and DELETE) and `ansible-playbook` with INI inventories, YAML playbooks and the `ios_command`, `ios_config` and `ios_facts` modules over SSH.
 - **Packet capture**: click a cable to open a Wireshark-style panel showing every frame crossing it, with protocol, addresses and info, a layer-by-layer detail view, and display filters (`icmp`, `arp`, `ip.addr == ...`, `vlan == 10`, `!stp`).
 
 See [docs/design.md](docs/design.md) for the full feature map and roadmap.
@@ -148,8 +163,8 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | over 400 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
-| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, completing a lab end to end, hints, solutions and deep links. |
+| Engine | Vitest | nearly 500 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, completing a lab end to end, hints, solutions and deep links. |
 
 ```bash
 npm test              # engine unit tests
@@ -199,7 +214,7 @@ Add the lab's id to the order in `catalog/index.ts` and `npm test` will prove it
 
 ## Roadmap
 
-Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH and the packet capture panel. Next up: VRRP/GLBP, AAA and more domain 5.0 operations labs. See [docs/design.md](docs/design.md).
+Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, Ansible, wireless and the packet capture panel. Next up: VRRP/GLBP, storm control, RA guard and NETCONF. See [docs/design.md](docs/design.md).
 
 ## License
 

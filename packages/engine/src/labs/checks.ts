@@ -8,6 +8,10 @@ import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
 import { IosDevice } from '../devices/ios-device';
 import { deviceAt } from '../cli/remote';
+import { Server } from '../devices/server';
+import { LightweightAp } from '../devices/ap';
+import { WirelessController, wlanSecurity } from '../devices/wlc';
+import { formatMethods } from '../services/aaa';
 import type { Check } from './types';
 
 export interface CheckResult {
@@ -518,7 +522,7 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const r = from.connect(check.to, check.protocol === 'ssh' ? 22 : 23);
       from.network?.run();
       const target = deviceAt(from, check.to);
-      const result = r.status === 'open' && target ? target.mgmt.authenticate(check.protocol, check.username, check.password) : undefined;
+      const result = r.status === 'open' && target ? target.login('vty', check.protocol, check.username, check.password) : undefined;
       const what = `${check.protocol === 'ssh' ? 'SSH' : 'Telnet'} to ${check.to}`;
       if (check.expect === 'success') {
         if (r.status !== 'open') return fail(`${what} does not connect (${r.status})`);
@@ -578,6 +582,121 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       if (!i) return fail(`${check.interface} does not exist`);
       if (!i.description) return fail(`${i.name} has no description`);
       return i.description.toLowerCase().includes(check.contains.toLowerCase()) ? ok : fail(`${i.name} is described as "${i.description}"`);
+    }
+    case 'aaaMethods': {
+      const d = iosOf(device(check.device));
+      if (!d.aaa.newModel) return fail(`${d.hostname} does not have aaa new-model`);
+      const name = check.name ?? 'default';
+      const m = (check.list === 'login' ? d.aaa.login : d.aaa.authorization).get(name);
+      const what = check.list === 'login' ? 'authentication login' : 'authorization exec';
+      if (!m) return fail(`There is no aaa ${what} ${name} list`);
+      return formatMethods(m) === check.methods ? ok : fail(`aaa ${what} ${name} uses ${formatMethods(m)}`);
+    }
+    case 'aaaServer': {
+      const d = iosOf(device(check.device));
+      const s = [...d.aaa.servers.values()].find((x) => x.protocol === check.protocol && x.address === check.address);
+      const label = check.protocol === 'radius' ? 'RADIUS' : 'TACACS+';
+      if (!s) return fail(`${d.hostname} has no ${label} server at ${check.address}`);
+      return d.aaa.keyOf(s) ? ok : fail(`The ${label} server ${s.name} has no key`);
+    }
+    case 'aaaLogin': {
+      const d = iosOf(device(check.device));
+      const r = d.login('vty', 'ssh', check.username, check.password);
+      if (check.expect === 'fail') return r.ok ? fail(`${check.username} can still log in`) : ok;
+      if (!r.ok) return fail(`${check.username} cannot log in: ${r.reason.replace(/^% /, '')}`);
+      return check.privilege === undefined || r.privilege === check.privilege ? ok : fail(`${check.username} logs in at privilege level ${r.privilege}`);
+    }
+    case 'snmpCommunity': {
+      const d = iosOf(device(check.device));
+      const c = d.snmp.communities.get(check.community);
+      if (!c) return fail(`${d.hostname} has no community ${check.community}`);
+      if (c.access !== check.access) return fail(`${check.community} is ${c.access.toUpperCase()}`);
+      if (check.acl !== undefined && c.acl !== check.acl) return fail(c.acl ? `${check.community} uses ACL ${c.acl}` : `${check.community} is not limited by an ACL`);
+      return ok;
+    }
+    case 'snmpUser': {
+      const d = iosOf(device(check.device));
+      const u = d.snmp.users.get(check.user);
+      if (!u) return fail(`${d.hostname} has no SNMPv3 user ${check.user}`);
+      const g = d.snmp.groups.get(u.group);
+      if (!g) return fail(`${check.user} is in group ${u.group}, which does not exist`);
+      if (g.level !== check.level) return fail(`Group ${g.name} uses security level ${g.level}`);
+      if (g.level !== 'noauth' && !u.auth) return fail(`${check.user} has no authentication password`);
+      if (g.level === 'priv' && !u.priv) return fail(`${check.user} has no privacy (encryption) password`);
+      return ok;
+    }
+    case 'snmpHost': {
+      const d = iosOf(device(check.device));
+      const h = d.snmp.hosts.find((x) => x.address === check.address);
+      if (!h) return fail(`${d.hostname} sends no notifications to ${check.address}`);
+      if (check.version && h.version !== check.version) return fail(`Traps to ${check.address} use version ${h.version}`);
+      return d.snmp.trapsEnabled ? ok : fail('No traps are enabled (snmp-server enable traps)');
+    }
+    case 'snmpQuery': {
+      const srv = device(check.from);
+      if (!(srv instanceof Server)) throw new Error(`${srv.hostname} is not a server`);
+      const reply = srv.snmpRequest(check.to, { version: '2c', community: check.community, pdu: 'get', varbinds: [{ oid: '1.3.6.1.2.1.1.5.0' }] });
+      const answered = reply !== undefined && reply.pdu === 'response';
+      if (check.expect === 'answer') return answered ? ok : fail(`snmpget to ${check.to} with community ${check.community} times out`);
+      return answered ? fail(`${check.to} still answers ${srv.hostname} with community ${check.community}`) : ok;
+    }
+    case 'trapReceived': {
+      const srv = device(check.device);
+      if (!(srv instanceof Server)) throw new Error(`${srv.hostname} is not a server`);
+      const from = check.from ? ipDevice(device(check.from)) : undefined;
+      const hit = srv.trapLog.some((l) => (!from || from.interfaces.some((i) => i.ip && l.includes(`from ${i.ip.address} `))) && (!check.trap || l.includes(check.trap)));
+      return hit ? ok : fail(`${srv.hostname} has not received ${check.trap ? `a ${check.trap} trap` : 'any trap'}${from ? ` from ${from.hostname}` : ''}`);
+    }
+    case 'restconf': {
+      const d = iosOf(device(check.device));
+      if (!d.http.secure) return fail('The HTTPS server is off (ip http secure-server)');
+      return d.http.restconf ? ok : fail('RESTCONF is not enabled');
+    }
+    case 'wlan': {
+      const d = device(check.device);
+      if (!(d instanceof WirelessController)) throw new Error(`${d.hostname} is not a wireless controller`);
+      const w = [...d.wlans.values()].find((x) => x.ssid === check.ssid);
+      if (!w) return fail(`There is no WLAN with SSID ${check.ssid}`);
+      if (check.enabled !== undefined && w.enabled !== check.enabled) return fail(`WLAN ${w.id} is ${w.enabled ? 'enabled' : 'disabled'}`);
+      const sec = wlanSecurity(w);
+      if (check.security && sec !== check.security) return fail(typeof sec === 'string' ? `WLAN ${w.id} security is ${sec}` : `WLAN ${w.id}: ${sec.error}`);
+      if (check.vlan !== undefined && d.vlanOf(w) !== check.vlan) return fail(`WLAN ${w.id} is mapped to interface ${w.interface} (VLAN ${d.vlanOf(w) === 0 ? 'untagged' : d.vlanOf(w)})`);
+      return ok;
+    }
+    case 'apJoined': {
+      const ap = device(check.device);
+      if (!(ap instanceof LightweightAp)) throw new Error(`${ap.hostname} is not an access point`);
+      if (!ap.controller) return fail(ap.nic.ip && !ap.apipa ? `${ap.hostname} has ${ap.nic.ip.address} but has not joined a controller` : `${ap.hostname} has no IP address yet`);
+      if (check.controller) {
+        const wlc = device(check.controller);
+        if (ap.controller.name !== wlc.hostname) return fail(`${ap.hostname} joined ${ap.controller.name}`);
+      }
+      return ok;
+    }
+    case 'wirelessClient': {
+      const pc = device(check.device);
+      if (!(pc instanceof Pc) || !pc.wifi) throw new Error(`${pc.hostname} has no Wi-Fi`);
+      const w = pc.wifi;
+      if (!w.connected || w.bss?.wlan.ssid !== check.ssid) return fail(w.connected ? `${pc.hostname} is on ${w.bss?.wlan.ssid}` : `${pc.hostname} is not connected${w.reason ? `: ${w.reason}` : ''}`);
+      if (check.network) {
+        const ip = pc.nic.ip;
+        if (!ip || pc.apipa || !sameSubnet(ip.address, check.network, check.prefix ?? 24)) return fail(`${pc.hostname} is connected but has ${ip && !pc.apipa ? ip.address : 'no DHCP address'}`);
+      }
+      return ok;
+    }
+    case 'apChannels': {
+      const d = device(check.device);
+      if (!(d instanceof WirelessController)) throw new Error(`${d.hostname} is not a wireless controller`);
+      const idx = check.band === '2.4' ? 0 : 1;
+      const rows = [...d.aps.keys()].map((ap) => ({ ap, ch: d.channelsFor(ap)[idx]! }));
+      for (const a of rows) {
+        for (const b of rows) {
+          if (a.ap >= b.ap) continue;
+          if (a.ch === b.ch) return fail(`${a.ap} and ${b.ap} share channel ${a.ch}`);
+          if (check.band === '2.4' && WirelessController.overlaps24(a.ch, b.ch)) return fail(`${a.ap} (channel ${a.ch}) and ${b.ap} (channel ${b.ch}) overlap`);
+        }
+      }
+      return rows.length >= 2 ? ok : fail('Fewer than two APs have joined');
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');
