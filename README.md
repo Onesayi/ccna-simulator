@@ -33,6 +33,17 @@ The **Labs** tab has 64 hands-on labs covering all five domains of the CCNA 200-
 
 ![A router-on-a-stick lab in progress: the lab sheet grades objectives live while the learner types into R1's console](docs/img/lab.png)
 
+### Practice exam
+
+The **Exam** tab runs timed multiple-choice exams from a bank of 174 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
+
+- **Three lengths, or one domain.** A 20-question quick exam, a 50-question half exam or a full 100-question, 120-minute exam, mixed or limited to one domain.
+- **Exam-style navigation.** Flag questions for review, jump around with the question grid, and pick up where you left off after a reload. The exam is marked when time runs out.
+- **Scored like Cisco.** A score out of 1000 against a practice pass mark of 825, with a breakdown by domain and a history of recent attempts.
+- **Linked to the labs.** Every missed question shows its explanation and links to the labs that practise the topic, ranked by how many questions each one would have helped with.
+
+![Practice exam results: score out of 1000, a breakdown by domain, labs to practise and a review of missed questions](docs/img/exam-results.png)
+
 <details>
 <summary>All 64 labs</summary>
 
@@ -175,8 +186,8 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
-| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, completing a lab end to end, hints, solutions and deep links. |
+| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, the practice exam's drawing and scoring, a well-formedness check on every exam question, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, completing a lab end to end, hints, solutions and deep links, and a practice exam from start to results, including a reload and the clock running out. |
 
 ```bash
 npm test              # engine unit tests
@@ -206,8 +217,9 @@ packages/engine   Simulation engine: pure TypeScript, no DOM, fully unit-tested
   src/cli         IOS command parser, show output formatters, PC command prompt
   src/labs        Lab format, grader checks, LabRun, progress tracking, and the lab catalog
   src/capture     Frame dissection and display filters for the packet capture panel
+  src/exam        Practice exam question bank, weighted drawing, scoring and attempt history
   test/           Vitest specs, written as small labs
-apps/web          React + Vite front end: canvas, console, lab catalog and lab sheet, state stores
+apps/web          React + Vite front end: canvas, console, lab catalog and lab sheet, practice exam, state stores
   e2e/            Playwright specs and the screenshot generator
 docs/             Design doc, architecture notes and README images
 ```

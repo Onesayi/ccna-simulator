@@ -6,13 +6,15 @@ import { LabCatalog } from './components/LabCatalog';
 import { LabPanel } from './components/LabPanel';
 import { CapturePanel } from './components/CapturePanel';
 import { WlcPanel } from './components/WlcPanel';
+import { ExamView } from './components/ExamView';
 import { useNetwork } from './state/network';
 import { useStudy } from './state/study';
 
-/** Routes: "" is the sandbox, "#/labs" the catalog, "#/labs/<id>" one lab. Links can be shared. */
-type Route = { view: 'sandbox' } | { view: 'catalog' } | { view: 'lab'; id: string };
+/** Routes: "" is the sandbox, "#/labs" the catalog, "#/labs/<id>" one lab, "#/exam" the practice exam. Links can be shared. */
+type Route = { view: 'sandbox' } | { view: 'catalog' } | { view: 'lab'; id: string } | { view: 'exam' };
 
 function parseHash(hash: string): Route {
+  if (/^#\/exam\b/.test(hash)) return { view: 'exam' };
   const m = /^#\/labs(?:\/([\w-]+))?/.exec(hash);
   if (!m) return { view: 'sandbox' };
   return m[1] ? { view: 'lab', id: m[1] } : { view: 'catalog' };
@@ -48,7 +50,8 @@ export function App() {
 
   const selected = selectedId ? topology.devices.get(selectedId) : undefined;
   const inLab = route.view === 'lab' && run;
-  const tab = route.view === 'sandbox' ? 'sandbox' : 'labs';
+  const tab = route.view === 'sandbox' ? 'sandbox' : route.view === 'exam' ? 'exam' : 'labs';
+  const page = route.view === 'catalog' || route.view === 'exam';
 
   return (
     <div className={`layout ${route.view}`}>
@@ -60,6 +63,9 @@ export function App() {
           </button>
           <button className={tab === 'labs' ? 'active' : ''} aria-current={tab === 'labs'} onClick={() => go('#/labs')}>
             Labs
+          </button>
+          <button className={tab === 'exam' ? 'active' : ''} aria-current={tab === 'exam'} onClick={() => go('#/exam')}>
+            Exam
           </button>
         </nav>
         {route.view === 'sandbox' && (
@@ -76,12 +82,12 @@ export function App() {
             <button onClick={() => window.confirm('Start from an empty canvas?') && clear()}>Clear</button>
           </div>
         )}
-        {route.view !== 'catalog' && (
+        {!page && (
           <button className={capture.open ? 'active' : ''} aria-pressed={capture.open} onClick={() => (capture.open ? closeCapture() : openCapture(capture.link))}>
             Capture
           </button>
         )}
-        {route.view !== 'catalog' && (
+        {!page && (
           <span className="hint">
             {error ??
               (inLab
@@ -91,7 +97,11 @@ export function App() {
         )}
       </header>
 
-      {route.view === 'catalog' ? (
+      {route.view === 'exam' ? (
+        <main className="catalog-wrap">
+          <ExamView />
+        </main>
+      ) : route.view === 'catalog' ? (
         <main className="catalog-wrap">
           <LabCatalog onOpen={(id) => go(`#/labs/${id}`)} />
         </main>
