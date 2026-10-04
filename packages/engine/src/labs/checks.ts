@@ -6,6 +6,8 @@ import { IpDevice } from '../devices/ip-device';
 import { Pc } from '../devices/pc';
 import { Router } from '../devices/router';
 import { Switch } from '../devices/switch';
+import { IosDevice } from '../devices/ios-device';
+import { deviceAt } from '../cli/remote';
 import type { Check } from './types';
 
 export interface CheckResult {
@@ -36,6 +38,11 @@ function switchOf(d: Device): Switch {
 
 function routerOf(d: Device): Router {
   if (!(d instanceof Router)) throw new Error(`${d.hostname} is not a router`);
+  return d;
+}
+
+function iosOf(d: Device): IosDevice {
+  if (!(d instanceof IosDevice)) throw new Error(`${d.hostname} is not a router or switch`);
   return d;
 }
 
@@ -362,6 +369,145 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const found = (i.portSecurity?.addresses ?? []).filter((a) => !check.kind || a.type === check.kind);
       const want = check.count ?? 1;
       return found.length >= want ? ok : fail(`${i.name} has ${found.length} ${check.kind ?? 'secure'} address${found.length === 1 ? '' : 'es'}`);
+    }
+    case 'hsrp': {
+      const r = routerOf(device(check.device));
+      const i = findIface(r, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const st = r.hsrp.groups().find((g) => g.iface === i && g.config.group === check.group);
+      if (!st) return fail(`${i.name} has no HSRP group ${check.group}`);
+      const vip = r.hsrp.vip(st);
+      if (check.vip && st.config.vip !== check.vip) return fail(`Group ${check.group} on ${r.hostname} uses virtual IP ${st.config.vip ?? 'none (learned)'}`);
+      if (check.priority !== undefined && st.config.priority !== check.priority) return fail(`Group ${check.group} on ${r.hostname} has priority ${st.config.priority}`);
+      if (check.preempt !== undefined && st.config.preempt !== check.preempt) return fail(`Preemption is ${st.config.preempt ? 'on' : 'off'} for group ${check.group} on ${r.hostname}`);
+      if (check.track) {
+        const t = st.config.tracks.find((x) => x.iface === r.findIface(check.track!)?.name);
+        if (!t) return fail(`Group ${check.group} on ${r.hostname} does not track ${check.track}`);
+      }
+      if (check.state && st.state !== check.state) return fail(`${r.hostname} is ${st.state} for group ${check.group}${vip ? ` (${vip})` : ''}`);
+      return ok;
+    }
+    case 'dhcpSnooping': {
+      const sw = switchOf(device(check.device));
+      if (!sw.snooping.enabled) return fail(`DHCP snooping is not enabled globally on ${sw.hostname}`);
+      if (!sw.snooping.vlans.has(check.vlan)) return fail(`DHCP snooping is not enabled for VLAN ${check.vlan}`);
+      if (check.option82 !== undefined && sw.snooping.option82 !== check.option82) return fail(`Option 82 insertion is ${sw.snooping.option82 ? 'on' : 'off'}`);
+      return ok;
+    }
+    case 'dhcpSnoopingTrust': {
+      const sw = switchOf(device(check.device));
+      const i = findIface(sw, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const trusted = Boolean(i.dhcpSnooping?.trust);
+      return trusted === check.trusted ? ok : fail(`${i.name} is ${trusted ? 'trusted' : 'untrusted'}`);
+    }
+    case 'dhcpSnoopingBinding': {
+      const sw = switchOf(device(check.device));
+      const client = device(check.client);
+      const mac = client.interfaces[0]!.mac;
+      const b = sw.snooping.bindings.find((x) => x.mac === mac);
+      return b ? ok : fail(`${sw.hostname} has no snooping binding for ${client.hostname} (${sw.snooping.bindings.length} in total)`);
+    }
+    case 'sshServer': {
+      const d = iosOf(device(check.device));
+      const m = d.mgmt;
+      if (!m.sshEnabled) return fail(`SSH is not running on ${d.hostname} (no RSA keys)`);
+      if (check.modulus && m.rsaModulus! < check.modulus) return fail(`The RSA key on ${d.hostname} is only ${m.rsaModulus} bits`);
+      if (check.version && m.sshVersion !== check.version) return fail(`${d.hostname} runs SSH version ${m.sshVersionLabel}`);
+      return ok;
+    }
+    case 'vtyAccess': {
+      const d = iosOf(device(check.device));
+      const vty = d.mgmt.vty;
+      if (check.transport) {
+        const have = [...vty.transport].sort().join(' ') || 'none';
+        const want = [...check.transport].sort().join(' ') || 'none';
+        if (have !== want) return fail(`The VTY lines on ${d.hostname} accept ${have}`);
+      }
+      if (check.login && vty.login !== check.login) return fail(`The VTY lines on ${d.hostname} use ${vty.login === 'none' ? 'no login' : vty.login === 'local' ? 'login local' : 'login (line password)'}`);
+      return ok;
+    }
+    case 'localUser': {
+      const d = iosOf(device(check.device));
+      const u = d.mgmt.users.get(check.username);
+      if (!u) return fail(`${d.hostname} has no user ${check.username}`);
+      if (check.privilege !== undefined && u.privilege !== check.privilege) return fail(`${check.username} has privilege ${u.privilege}`);
+      if (check.secret !== undefined && u.secret !== check.secret) return fail(`${check.username} uses ${u.secret ? 'secret' : 'password'}`);
+      return ok;
+    }
+    case 'enableSecret': {
+      const d = iosOf(device(check.device));
+      return d.mgmt.enableSecret !== undefined ? ok : fail(`${d.hostname} has no enable secret`);
+    }
+    case 'passwordEncryption': {
+      const d = iosOf(device(check.device));
+      return d.mgmt.passwordEncryption ? ok : fail(`Clear-text passwords on ${d.hostname} are not encrypted`);
+    }
+    case 'remoteLogin': {
+      const from = ipDevice(device(check.from));
+      const r = from.connect(check.to, check.protocol === 'ssh' ? 22 : 23);
+      from.network?.run();
+      const target = deviceAt(from, check.to);
+      const result = r.status === 'open' && target ? target.mgmt.authenticate(check.protocol, check.username, check.password) : undefined;
+      const what = `${check.protocol === 'ssh' ? 'SSH' : 'Telnet'} to ${check.to}`;
+      if (check.expect === 'success') {
+        if (r.status !== 'open') return fail(`${what} does not connect (${r.status})`);
+        return result?.ok ? ok : fail(`${what} connects but the login fails`);
+      }
+      return result?.ok ? fail(`${what} still lets ${from.hostname} log in`) : ok;
+    }
+    case 'ntpSynced': {
+      const d = iosOf(device(check.device));
+      const n = d.ntp;
+      if (!n.sync) return fail(n.servers.length ? `${d.hostname} is not synchronized to ${n.servers.join(', ')}` : `${d.hostname} has no NTP server`);
+      if (check.server && n.sync.server !== check.server) return fail(`${d.hostname} is synchronized to ${n.sync.server}`);
+      if (check.stratum !== undefined && n.sync.stratum !== check.stratum) return fail(`${d.hostname} is at stratum ${n.sync.stratum}`);
+      return ok;
+    }
+    case 'ntpMaster': {
+      const d = iosOf(device(check.device));
+      if (d.ntp.master === undefined) return fail(`${d.hostname} is not an NTP master`);
+      return check.stratum === undefined || d.ntp.master === check.stratum ? ok : fail(`${d.hostname} serves stratum ${d.ntp.master}`);
+    }
+    case 'clock': {
+      const d = iosOf(device(check.device));
+      const year = new Date(d.ntp.time).getUTCFullYear();
+      if (year < check.minYear) return fail(`${d.hostname} thinks it is ${year}`);
+      if (check.timezone && d.ntp.timezone.name !== check.timezone) return fail(`${d.hostname} shows time zone ${d.ntp.timezone.name}`);
+      return ok;
+    }
+    case 'logTimestamps': {
+      const d = iosOf(device(check.device));
+      return d.logTimestamps?.kind === 'datetime' ? ok : fail(`Log messages on ${d.hostname} carry no date and time`);
+    }
+    case 'neighbor': {
+      const d = iosOf(device(check.device));
+      const protocol = check.protocol ?? 'cdp';
+      const want = check.neighbor.toLowerCase();
+      const found = d.discovery
+        .neighbors(protocol)
+        .find((n) => n.pdu.deviceId.toLowerCase().split('.')[0] === want && (!check.interface || n.local === d.findIface(check.interface)));
+      const where = check.interface ? ` on ${check.interface}` : '';
+      if (check.absent) return found ? fail(`${d.hostname} still sees ${check.neighbor} with ${protocol.toUpperCase()}`) : ok;
+      return found ? ok : fail(`${d.hostname} has no ${protocol.toUpperCase()} neighbor ${check.neighbor}${where}`);
+    }
+    case 'discovery': {
+      const d = iosOf(device(check.device));
+      const name = check.protocol.toUpperCase();
+      const global = check.protocol === 'cdp' ? d.discovery.cdpEnabled : d.discovery.lldpEnabled;
+      if (!check.interface) return global === check.enabled ? ok : fail(`${name} is ${global ? 'running' : 'off'} on ${d.hostname}`);
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      const port = check.protocol === 'cdp' ? i.cdp !== false : i.lldp?.transmit !== false;
+      const on = global && port;
+      return on === check.enabled ? ok : fail(`${name} is ${on ? 'running' : 'off'} on ${i.name}`);
+    }
+    case 'description': {
+      const d = device(check.device);
+      const i = findIface(d, check.interface);
+      if (!i) return fail(`${check.interface} does not exist`);
+      if (!i.description) return fail(`${i.name} has no description`);
+      return i.description.toLowerCase().includes(check.contains.toLowerCase()) ? ok : fail(`${i.name} is described as "${i.description}"`);
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');

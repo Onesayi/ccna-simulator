@@ -8,6 +8,13 @@ import { Switch } from '../devices/switch';
 import type { OspfProcess } from '../routing/ospf';
 import type { Acl } from '../services/acl';
 import type { DhcpPool } from '../services/dhcp';
+import type { IosDevice } from '../devices/ios-device';
+import type { LineConfig } from '../services/management';
+import { MANAGEMENT_COMMANDS } from './commands-management';
+import { HSRP_COMMANDS } from './commands-hsrp';
+import { Interaction, type Shell } from './remote';
+
+export type { Shell } from './remote';
 import { CONFIG_MODES, EXEC, IF_MODES, L2_IF_MODES, iface, ip, parseVlanList, requireIp, requireSwitch, vlanId, type Command, type Mode, type Session } from './common';
 import { IPV6_COMMANDS } from './commands-ipv6';
 import { OSPF_COMMANDS } from './commands-ospf';
@@ -41,12 +48,14 @@ const PROMPT_SUFFIX: Record<Mode, string> = {
   'dhcp-config': '(dhcp-config)#',
   'config-std-nacl': '(config-std-nacl)#',
   'config-ext-nacl': '(config-ext-nacl)#',
+  'config-line': '(config-line)#',
 };
 
-/** Anything a terminal can drive: the IOS CLI here, or the PC command prompt. */
-export interface Shell {
-  readonly prompt: string;
-  execute(line: string): string;
+export interface CliOptions {
+  /** A telnet or SSH session rather than the console: `exit` closes it and `enable` needs a password. */
+  remote?: boolean;
+  /** Privilege 15 users log straight into privileged EXEC. */
+  privilege?: number;
 }
 
 /**
@@ -61,14 +70,44 @@ export class CliSession implements Shell, Session {
   currentOspf?: OspfProcess;
   currentPool?: DhcpPool;
   currentAcl?: Acl;
+  currentLine?: LineConfig;
+  readonly io = new Interaction();
+  readonly remote: boolean;
+  closed = false;
 
-  constructor(readonly device: Device) {}
+  constructor(
+    readonly device: Device,
+    options: CliOptions = {},
+  ) {
+    this.remote = options.remote ?? false;
+    if ((options.privilege ?? 1) >= 15) this.mode = 'privileged';
+  }
 
   get prompt(): string {
-    return `${this.device.hostname}${PROMPT_SUFFIX[this.mode]}`;
+    return this.io.prompt ?? `${this.device.hostname}${PROMPT_SUFFIX[this.mode]}`;
+  }
+
+  get masked(): boolean {
+    return this.io.masked;
+  }
+
+  get instantHelp(): boolean {
+    return this.io.instantHelp;
+  }
+
+  spawn(device: IosDevice, privilege: number): Shell {
+    return new CliSession(device, { remote: true, privilege });
   }
 
   execute(line: string): string {
+    if (this.io.active) {
+      const logged = this.device.log.length;
+      const remote = this.io.remote !== undefined;
+      const out = this.io.execute(line);
+      this.device.network?.converge();
+      // Inside a telnet or SSH session, the far device prints its own messages.
+      return remote ? out : [out, ...this.device.log.slice(logged)].filter(Boolean).join('\n');
+    }
     const input = line.trim();
     if (!input) return '';
     if (input.endsWith('?')) return this.help(input.slice(0, -1).trim());
@@ -162,7 +201,8 @@ export class CliSession implements Shell, Session {
   private supports(c: Command): boolean {
     const isSwitch = this.device instanceof Switch;
     if (/switchport|vlan|mac address|trunk|default-gateway|ip routing|spanning-tree|channel|port-security|interfaces status/.test(c.syntax)) return isSwitch;
-    if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|telnet|ipv6/.test(c.syntax)) return !isSwitch;
+    if (/snooping/.test(c.syntax)) return isSwitch;
+    if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|ipv6|standby/.test(c.syntax)) return !isSwitch;
     return true;
   }
 }
@@ -235,7 +275,21 @@ function parseRouteTarget(d: IpDevice, network: string, mask: string, rest: stri
 
 const COMMANDS: Command[] = [
   // Mode navigation
-  { syntax: 'enable', modes: ['user'], help: 'Turn on privileged commands', run: (s) => void (s.mode = 'privileged') },
+  { syntax: 'enable', modes: ['user'], help: 'Turn on privileged commands', run: (s) => {
+    const mgmt = (s.device as Partial<IosDevice>).mgmt;
+    const needed = mgmt?.enableRequired;
+    if (needed === undefined) {
+      // Over telnet or SSH, IOS refuses enable until an enable password exists.
+      if (s.remote) throw new Error('No password set');
+      s.mode = 'privileged';
+      return;
+    }
+    s.io.ask('Password: ', (pw) => {
+      if (pw !== needed) return '% Bad secrets';
+      s.mode = 'privileged';
+      return '';
+    }, true);
+  } },
   { syntax: 'disable', modes: ['privileged'], help: 'Turn off privileged commands', run: (s) => void (s.mode = 'user') },
   { syntax: 'configure terminal', modes: ['privileged'], help: 'Enter configuration mode', run: (s) => {
     s.mode = 'config';
@@ -244,6 +298,11 @@ const COMMANDS: Command[] = [
   { syntax: 'exit', modes: [...EXEC, ...CONFIG_MODES], help: 'Exit from the current mode', run: (s) => {
     if (s.mode !== 'config' && CONFIG_MODES.includes(s.mode)) s.mode = 'config';
     else if (s.mode === 'config') s.mode = 'privileged';
+    else if (s.remote) s.closed = true;
+    else s.mode = 'user';
+  } },
+  { syntax: 'logout', modes: EXEC, help: 'Exit from the EXEC', run: (s) => {
+    if (s.remote) s.closed = true;
     else s.mode = 'user';
   } },
   { syntax: 'end', modes: CONFIG_MODES, help: 'Exit to privileged EXEC mode', run: (s) => void (s.mode = 'privileged') },
@@ -411,6 +470,8 @@ const COMMANDS: Command[] = [
   ...SERVICE_COMMANDS,
   ...SWITCHING_COMMANDS,
   ...IPV6_COMMANDS,
+  ...MANAGEMENT_COMMANDS,
+  ...HSRP_COMMANDS,
 ];
 
 function target(dst: string): string {

@@ -115,6 +115,30 @@ export interface Interface {
   stp?: InterfaceStpConfig;
   portSecurity?: PortSecurityConfig;
   ipv6?: Ipv6InterfaceConfig;
+  /** `no cdp enable` sets this to false. */
+  cdp?: boolean;
+  /** `no lldp transmit` / `no lldp receive`. */
+  lldp?: { transmit?: boolean; receive?: boolean };
+  /** HSRP groups on this interface (`standby ...`). */
+  hsrp?: HsrpInterfaceConfig;
+  /** `ip dhcp snooping trust` and `ip dhcp snooping limit rate`. */
+  dhcpSnooping?: { trust?: boolean; rateLimit?: number };
+  /** `ip dhcp relay information trusted`: accept DHCP packets carrying option 82 without a relay address. */
+  dhcpRelayTrusted?: boolean;
+}
+
+export interface HsrpGroupConfig {
+  group: number;
+  vip?: Ipv4Address;
+  priority: number;
+  preempt: boolean;
+  /** `standby <g> track <interface> [decrement]`: lower the priority while that interface is down. */
+  tracks: { iface: string; decrement: number }[];
+}
+
+export interface HsrpInterfaceConfig {
+  version: 1 | 2;
+  groups: HsrpGroupConfig[];
 }
 
 export interface InterfaceOspfConfig {

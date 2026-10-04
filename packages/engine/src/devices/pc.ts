@@ -17,7 +17,9 @@ export class Pc extends IpDevice {
   protected override readonly queueDuringArp = true;
   protected override readonly initialTtl = 128;
   protected override readonly ipv6HopLimit = 128;
-  protected override readonly listeningPorts = [80, 443];
+  protected override get listeningPorts(): readonly number[] {
+    return [80, 443];
+  }
   /** True when the address comes from DHCP rather than static configuration. */
   dhcp = false;
   /** Set while the PC has a self-assigned 169.254.x.x address because no DHCP server answered. */

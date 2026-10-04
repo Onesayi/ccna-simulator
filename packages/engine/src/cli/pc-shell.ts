@@ -3,7 +3,8 @@ import { isLinkLocal, isValidIpv6, normaliseIpv6, parseIpv6Prefix } from '../cor
 import type { Device } from '../devices/device';
 import type { PingResult, TracerouteResult } from '../devices/ip-device';
 import { Pc } from '../devices/pc';
-import { CliSession, type Shell } from './session';
+import { CliSession } from './session';
+import { Interaction, beginLogin, parseSsh, type Shell } from './remote';
 
 const PC_HELP = `Available commands:
   ipconfig [/all]                        Show the IP configuration
@@ -17,19 +18,30 @@ const PC_HELP = `Available commands:
   tracert <ip|ipv6>                      Trace the route to a host
   arp -a                                 Show the ARP cache
   arp -d                                 Clear the ARP cache
-  telnet <ip> [port]                     Open a TCP connection (default port 23)
+  telnet <ip> [port]                     Open a telnet session (or a TCP connection to a port)
+  ssh -l <user> <ip>                     Open an SSH session
   curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)`;
 
 /** A Windows-flavoured command prompt for PCs, close to Packet Tracer's. */
 export class PcShell implements Shell {
+  readonly io = new Interaction();
+
   constructor(readonly pc: Pc) {}
 
   get prompt(): string {
-    return 'C:\\>';
+    return this.io.prompt ?? 'C:\\>';
+  }
+
+  get masked(): boolean {
+    return this.io.masked;
+  }
+
+  get instantHelp(): boolean {
+    return this.io.remote !== undefined && this.io.instantHelp;
   }
 
   execute(line: string): string {
-    const out = this.run(line);
+    const out = this.io.active ? this.io.execute(line) : this.run(line);
     this.pc.network?.converge();
     return out;
   }
@@ -55,6 +67,8 @@ export class PcShell implements Shell {
         return this.arp(args);
       case 'telnet':
         return this.telnet(args);
+      case 'ssh':
+        return this.ssh(args);
       case 'curl':
         return this.curl(args);
       default:
@@ -181,8 +195,21 @@ export class PcShell implements Shell {
     const port = Number(p);
     if (!dst || !isValidIp(dst) || !Number.isInteger(port) || port < 1 || port > 65535) return 'Usage: telnet <ip> [port]';
     const r = this.connect(dst, port);
+    if (r.status === 'open' && port === 23) return `Trying ${dst} ...Open${this.login(dst, 'telnet')}`;
     if (r.status === 'open') return `Trying ${dst} ...Open\n\n[Connection to ${dst} closed by foreign host]`;
     return `Trying ${dst} ...\n% Connection ${r.status === 'refused' ? 'refused by remote host' : 'timed out; remote host not responding'}`;
+  }
+
+  private ssh(args: string[]): string {
+    const { user, host } = parseSsh(args);
+    if (!user || !host || !isValidIp(host)) return 'Usage: ssh -l <username> <ip>';
+    const r = this.connect(host, 22);
+    if (r.status === 'open') return this.login(host, 'ssh', user);
+    return `% Connection ${r.status === 'refused' ? 'refused by remote host' : 'timed out; remote host not responding'}`;
+  }
+
+  private login(host: string, protocol: 'ssh' | 'telnet', user?: string): string {
+    return beginLogin(this.io, this.pc, host, protocol, user, (device, privilege) => new CliSession(device, { remote: true, privilege }));
   }
 
   private curl(args: string[]): string {

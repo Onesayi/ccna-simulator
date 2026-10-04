@@ -1,5 +1,6 @@
 import { peerUp, shortName, type Interface, type PortSecurityConfig } from '../devices/device';
 import type { Switch } from '../devices/switch';
+import { formatVlanList } from './show';
 
 /** `show interfaces status`: one line per switchport, with err-disabled ports called out. */
 export function showInterfacesStatus(sw: Switch, onlyErrDisabled = false): string {
@@ -82,5 +83,49 @@ export function showPortSecurityAddress(sw: Switch): string {
     ...rows,
     '-----------------------------------------------------------------------------',
     `Total Addresses in System (excluding one mac per port)     : ${Math.max(0, rows.length - sw.ports.filter((p) => p.portSecurity?.enabled).length)}`,
+  ].join('\n');
+}
+
+export function showDhcpSnooping(sw: Switch): string {
+  const sn = sw.snooping;
+  const vlans = [...sn.vlans].sort((a, b) => a - b);
+  const operational = sn.enabled ? vlans.filter((v) => sw.vlans.has(v)) : [];
+  const configured = [...sw.ports, ...sw.portChannels].filter((p) => p.dhcpSnooping?.trust || p.dhcpSnooping?.rateLimit);
+  return [
+    `Switch DHCP snooping is ${sn.enabled ? 'enabled' : 'disabled'}`,
+    'Switch DHCP gleaning is disabled',
+    'DHCP snooping is configured on following VLANs:',
+    formatVlanList(vlans),
+    'DHCP snooping is operational on following VLANs:',
+    formatVlanList(operational),
+    'DHCP snooping is configured on the following L3 Interfaces:',
+    '',
+    `Insertion of option 82 is ${sn.option82 ? 'enabled' : 'disabled'}`,
+    '   circuit-id default format: vlan-mod-port',
+    `   remote-id: ${sw.bridgeMac} (MAC)`,
+    'Option 82 on untrusted port is not allowed',
+    'Verification of hwaddr field is enabled',
+    'Verification of giaddr field is enabled',
+    'DHCP snooping trust/rate is configured on the following Interfaces:',
+    '',
+    'Interface                  Trusted    Allow option    Rate limit (pps)',
+    '-----------------------    -------    ------------    ----------------',
+    ...configured.map((p) => {
+      const trusted = p.dhcpSnooping?.trust ? 'yes' : 'no';
+      return `${p.name.padEnd(27)}${trusted.padEnd(11)}${trusted.padEnd(16)}${p.dhcpSnooping?.rateLimit ?? 'unlimited'}`;
+    }),
+  ].join('\n');
+}
+
+export function showDhcpSnoopingBinding(sw: Switch): string {
+  const rows = sw.snooping.bindings.map((b) => {
+    const mac = b.mac.replace(/\./g, '').replace(/(..)(?=.)/g, '$1:').toUpperCase();
+    return `${mac.padEnd(20)}${b.ip.padEnd(17)}${String(b.leaseSeconds).padEnd(12)}${'dhcp-snooping'.padEnd(15)}${String(b.vlan).padEnd(6)}${b.port.name}`;
+  });
+  return [
+    'MacAddress          IpAddress        Lease(sec)  Type           VLAN  Interface',
+    '------------------  ---------------  ----------  -------------  ----  --------------------',
+    ...rows,
+    `Total number of bindings: ${rows.length}`,
   ].join('\n');
 }

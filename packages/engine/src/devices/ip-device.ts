@@ -130,7 +130,9 @@ export abstract class IpDevice extends Device {
   /** TTL for locally originated packets: 255 on IOS, 128 on Windows. */
   protected readonly initialTtl: number = 255;
   /** TCP ports with a service listening (SYN gets SYN-ACK; anything else gets RST). */
-  protected readonly listeningPorts: readonly number[] = [];
+  protected get listeningPorts(): readonly number[] {
+    return [];
+  }
 
   /** Hop limit for locally originated IPv6 packets: 64 on IOS, 128 on Windows. */
   protected readonly ipv6HopLimit: number = 64;
@@ -216,6 +218,29 @@ export abstract class IpDevice extends Device {
   protected acceptsMulticast(_mac: MacAddress, _iface: Interface): boolean {
     return false;
   }
+
+  /** Virtual MACs this interface also receives frames for (HSRP). */
+  protected acceptsMac(_mac: MacAddress, _iface: Interface): boolean {
+    return false;
+  }
+
+  /** The virtual MAC to answer ARP with when `ip` is a virtual address we own on `iface` (HSRP). */
+  protected virtualMacFor(_iface: Interface, _ip: Ipv4Address): MacAddress | undefined {
+    return undefined;
+  }
+
+  /** Virtual addresses delivered locally, such as an HSRP virtual IP while we are active. */
+  protected ownsVirtualIp(_ip: Ipv4Address): boolean {
+    return false;
+  }
+
+  /** UDP control traffic that arrives on an interface (HSRP hellos). Returns true when consumed. */
+  protected handleUdpControl(_iface: Interface, _p: UdpPacket, _frame: Frame): boolean {
+    return false;
+  }
+
+  /** UDP addressed to us (NTP). */
+  protected handleUdp(_p: UdpPacket): void {}
 
   /** Addresses we answer ARP for besides our own, such as NAT global addresses. */
   protected answersArpFor(_iface: Interface, _ip: Ipv4Address): boolean {
@@ -436,9 +461,9 @@ export abstract class IpDevice extends Device {
   protected receiveL3(iface: Interface, frame: Frame): void {
     const p = frame.payload;
     if (p.kind === 'icmpv6') return this.ipv6.receive(iface, p, frame);
-    if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp') return; // switch-to-switch protocols
+    if (p.kind === 'bpdu' || p.kind === 'lacp' || p.kind === 'pagp' || p.kind === 'cdp' || p.kind === 'lldp') return; // link-local protocols
     const multicast = this.acceptsMulticast(frame.dst, iface);
-    if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !multicast) return;
+    if (frame.dst !== iface.mac && frame.dst !== BROADCAST_MAC && !multicast && !this.acceptsMac(frame.dst, iface)) return;
     if (p.kind === 'arp') return this.handleArp(iface, p);
     const dhcp = p.kind === 'udp' && p.dhcp !== undefined;
     // A DHCP client has no address yet, so DHCP is the one thing an unaddressed interface takes.
@@ -449,9 +474,10 @@ export abstract class IpDevice extends Device {
     if (!this.permits(iface, 'in', p)) return this.icmpError('unreachable', p, iface);
     if (dhcp && this.handleDhcp(iface, p)) return;
     if (p.kind === 'ospf') return this.handleOspf(iface, p, frame);
+    if (p.kind === 'udp' && this.handleUdpControl(iface, p, frame)) return;
     if (multicast) return;
     const q = this.natInbound(iface, p);
-    if (this.ownsIp(q.dst) || q.dst === LIMITED_BROADCAST) return this.deliverLocal(q);
+    if (this.ownsIp(q.dst) || q.dst === LIMITED_BROADCAST || this.ownsVirtualIp(q.dst)) return this.deliverLocal(q);
     if (frame.dst === BROADCAST_MAC || !this.forwarding) return;
     this.forward(q, iface);
   }
@@ -469,6 +495,7 @@ export abstract class IpDevice extends Device {
       const flags = this.listeningPorts.includes(p.dstPort) ? 'syn-ack' : 'rst';
       return this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: this.initialTtl, srcPort: p.dstPort, dstPort: p.srcPort, flags });
     }
+    if (p.kind === 'udp') this.handleUdp(p);
   }
 
   private forward(p: IpPacket, ingress: Interface): void {
@@ -521,7 +548,8 @@ export abstract class IpDevice extends Device {
   private handleArp(iface: Interface, p: ArpPacket): void {
     const ip = iface.ip;
     if (!ip) return;
-    const forMe = p.targetIp === ip.address;
+    const virtual = this.virtualMacFor(iface, p.targetIp);
+    const forMe = p.targetIp === ip.address || virtual !== undefined;
     // RFC 826: always refresh an existing entry; only create one when we are the target.
     // Replies to proxy ARP carry an off-subnet sender IP, so no subnet check here.
     if (forMe || this.arpTable.has(p.senderIp)) {
@@ -533,7 +561,7 @@ export abstract class IpDevice extends Device {
       this.transmitL3(iface, p.senderMac, {
         kind: 'arp',
         op: 'reply',
-        senderMac: iface.mac,
+        senderMac: virtual ?? iface.mac,
         senderIp: p.targetIp,
         targetMac: p.senderMac,
         targetIp: p.senderIp,
@@ -560,16 +588,16 @@ export abstract class IpDevice extends Device {
   }
 
   /** Puts a packet on the wire from a Layer 3 interface. Sub-interfaces tag; switches override for SVIs. */
-  protected transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet): void {
+  protected transmitL3(iface: Interface, dstMac: MacAddress, payload: Packet, srcMac: MacAddress = iface.mac): void {
     if (iface.kind === 'subinterface') {
       const parent = iface.parent!;
-      const frame: Frame = { src: iface.mac, dst: dstMac, payload };
+      const frame: Frame = { src: srcMac, dst: dstMac, payload };
       if (!iface.encapNative) frame.vlan = iface.encapVlan;
       this.send(parent, frame);
       return;
     }
     if (iface.kind === 'loopback') return;
-    this.send(iface, { src: iface.mac, dst: dstMac, payload });
+    this.send(iface, { src: srcMac, dst: dstMac, payload });
   }
 
   // ---------------------------------------------------------------- helpers for the CLI

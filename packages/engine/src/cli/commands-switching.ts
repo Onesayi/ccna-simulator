@@ -3,7 +3,7 @@ import type { Switch } from '../devices/switch';
 import { showEtherchannelSummary } from '../switching/etherchannel';
 import { DEFAULT_BRIDGE_PRIORITY, compareBridge, showSpanningTree, showSpanningTreeSummary, showSpanningTreeVlan } from '../switching/stp';
 import { EXEC, INVALID, L2_IF_MODES, abbrev, iface, int, parseVlanList, requireSwitch, vlanId, type Command, type Session } from './common';
-import { showInterfacesStatus, showPortSecurity, showPortSecurityAddress, showPortSecurityInterface } from './show-switching';
+import { showDhcpSnooping, showDhcpSnoopingBinding, showInterfacesStatus, showPortSecurity, showPortSecurityAddress, showPortSecurityInterface } from './show-switching';
 
 /** Commands for spanning tree, EtherChannel and port security (Catalyst switches only). */
 
@@ -181,6 +181,35 @@ export const SWITCHING_COMMANDS: Command[] = [
     const ps = portSecurity(s);
     ps.addresses = ps.addresses.filter((a) => a.mac !== mac!.toLowerCase());
   } },
+
+  // DHCP snooping
+  { syntax: 'ip dhcp snooping', modes: ['config'], help: 'Enable DHCP snooping globally', run: (s) => void (requireSwitch(s).snooping.enabled = true) },
+  { syntax: 'no ip dhcp snooping', modes: ['config'], help: 'Disable DHCP snooping', run: (s) => void (requireSwitch(s).snooping.enabled = false) },
+  { syntax: 'ip dhcp snooping vlan <list>', modes: ['config'], help: 'Snoop DHCP in these VLANs', run: (s, [list]) => {
+    const sw = requireSwitch(s);
+    for (const v of parseVlanList(list!)) sw.snooping.vlans.add(v);
+  } },
+  { syntax: 'no ip dhcp snooping vlan <list>', modes: ['config'], help: 'Stop snooping in these VLANs', run: (s, [list]) => {
+    const sw = requireSwitch(s);
+    for (const v of parseVlanList(list!)) sw.snooping.vlans.delete(v);
+  } },
+  { syntax: 'ip dhcp snooping information option', modes: ['config'], help: 'Insert option 82 into client requests (default)', run: (s) => void (requireSwitch(s).snooping.option82 = true) },
+  { syntax: 'no ip dhcp snooping information option', modes: ['config'], help: 'Do not insert option 82', run: (s) => void (requireSwitch(s).snooping.option82 = false) },
+  { syntax: 'ip dhcp snooping trust', modes: L2_IF_MODES, help: 'Trust this port (it leads to a DHCP server)', run: (s) => {
+    const { i } = port(s);
+    (i.dhcpSnooping ??= {}).trust = true;
+  } },
+  { syntax: 'no ip dhcp snooping trust', modes: L2_IF_MODES, help: 'Untrusted: drop DHCP server messages here', run: (s) => {
+    const { i } = port(s);
+    if (i.dhcpSnooping) delete i.dhcpSnooping.trust;
+  } },
+  { syntax: 'ip dhcp snooping limit rate <pps>', modes: L2_IF_MODES, help: 'DHCP packets per second allowed in', run: (s, [pps]) => void ((port(s).i.dhcpSnooping ??= {}).rateLimit = int(pps, 1, 2048)) },
+  { syntax: 'no ip dhcp snooping limit rate', modes: L2_IF_MODES, help: 'No rate limit', run: (s) => {
+    const { i } = port(s);
+    if (i.dhcpSnooping) delete i.dhcpSnooping.rateLimit;
+  } },
+  { syntax: 'show ip dhcp snooping', modes: EXEC, help: 'DHCP snooping state and trusted ports', run: (s) => showDhcpSnooping(requireSwitch(s)) },
+  { syntax: 'show ip dhcp snooping binding', modes: EXEC, help: 'Leases DHCP snooping has seen', run: (s) => showDhcpSnoopingBinding(requireSwitch(s)) },
 
   // Show
   { syntax: 'show spanning-tree', modes: EXEC, help: 'Spanning tree state for every VLAN', run: (s) => showSpanningTree(requireSwitch(s).stp) },

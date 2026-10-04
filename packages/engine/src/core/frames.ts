@@ -45,6 +45,28 @@ export interface DhcpMessage {
   dns?: Ipv4Address;
   domain?: string;
   leaseDays?: number;
+  /** Relay agent information (option 82), inserted by a DHCP snooping switch. */
+  option82?: { circuitId: string; remoteId: string };
+}
+
+/** An HSRP hello (UDP 1985). Active and standby routers send one every hello interval. */
+export interface HsrpMessage {
+  version: 1 | 2;
+  group: number;
+  state: 'speak' | 'standby' | 'active';
+  priority: number;
+  /** The virtual IP, when the sender knows it. */
+  vip?: Ipv4Address;
+}
+
+/** An NTP request (mode 3) or reply (mode 4) on UDP 123. */
+export interface NtpMessage {
+  mode: 'client' | 'server';
+  /** Server replies: the server's stratum and its clock, in milliseconds since 1970. */
+  stratum?: number;
+  time?: number;
+  /** The server's reference, for `show ntp associations` on the client. */
+  reference?: string;
 }
 
 export interface UdpPacket extends IpHeader {
@@ -52,6 +74,8 @@ export interface UdpPacket extends IpHeader {
   srcPort: number;
   dstPort: number;
   dhcp?: DhcpMessage;
+  hsrp?: HsrpMessage;
+  ntp?: NtpMessage;
 }
 
 // ---------------------------------------------------------------- OSPF
@@ -177,7 +201,37 @@ interface ChannelPduFields {
 
 export type ChannelPdu = (ChannelPduFields & { kind: 'lacp' }) | (ChannelPduFields & { kind: 'pagp' });
 
+/**
+ * A CDP or LLDP advertisement: who the sender is, which port it left from and what it can do.
+ * Both protocols carry the same facts, so one shape serves both.
+ */
+interface DiscoveryFields {
+  deviceId: string;
+  /** Full interface name of the sending port. */
+  portId: string;
+  platform: string;
+  /** CDP letters (R, B, S, I) for CDP; LLDP letters (R, B) for LLDP. */
+  capabilities: string[];
+  /** The sender's management address, if it has one. */
+  address?: Ipv4Address;
+  /** CDP only: the sending port's native (or access) VLAN. */
+  nativeVlan?: number;
+  /** Seconds a receiver keeps the entry: 180 for CDP, 120 for LLDP. */
+  holdtime: number;
+  version: string;
+  /** LLDP chassis ID: the sender's base MAC. */
+  chassisId: MacAddress;
+}
+
+export type DiscoveryPdu = (DiscoveryFields & { kind: 'cdp' }) | (DiscoveryFields & { kind: 'lldp' });
+
 export const STP_MAC: MacAddress = '0100.0ccc.cccd';
+export const CDP_MAC: MacAddress = '0100.0ccc.cccc';
+export const LLDP_MAC: MacAddress = '0180.c200.000e';
+export const HSRP_V1_GROUP: Ipv4Address = '224.0.0.2';
+export const HSRP_V2_GROUP: Ipv4Address = '224.0.0.102';
+export const HSRP_V1_MAC: MacAddress = '0100.5e00.0002';
+export const HSRP_V2_MAC: MacAddress = '0100.5e00.0066';
 export const SLOW_PROTOCOLS_MAC: MacAddress = '0180.c200.0002';
 
 // ---------------------------------------------------------------- IPv6
@@ -207,7 +261,7 @@ export interface Icmpv6Packet {
 }
 
 /** Layer 3 payloads the engine understands. New protocols extend this union. */
-export type Packet = ArpPacket | IpPacket | Icmpv6Packet | BpduPacket | ChannelPdu;
+export type Packet = ArpPacket | IpPacket | Icmpv6Packet | BpduPacket | ChannelPdu | DiscoveryPdu;
 
 /** An Ethernet II frame, optionally carrying an 802.1Q tag while on a trunk. */
 export interface Frame {

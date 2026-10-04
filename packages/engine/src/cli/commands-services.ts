@@ -4,6 +4,7 @@ import { numberedAclType, parseAclEntry, showAccessLists, type Acl } from '../se
 import { showDhcpBinding, showDhcpPool } from '../services/dhcp';
 import { showNatTranslations } from '../services/nat';
 import { EXEC, IF_MODES, INVALID, abbrev, iface, int, ip, requireIp, requireRouter, type Command, type Session } from './common';
+import { beginLogin } from './remote';
 
 // ---------------------------------------------------------------- ACL helpers
 
@@ -126,7 +127,8 @@ function telnet(s: Session, dst: string, port: number): string {
   const head = `Trying ${dst}${port !== 23 ? `, ${port}` : ''} ... `;
   switch (result.status) {
     case 'open':
-      return `${head}Open\n\n${port === 23 ? 'Password required, but none set\n\n' : ''}[Connection to ${dst} closed by foreign host]`;
+      if (port !== 23) return `${head}Open\n\n[Connection to ${dst} closed by foreign host]`;
+      return `${head}Open${beginLogin(s.io, d, dst, 'telnet', undefined, (dev, prio) => s.spawn(dev, prio))}`;
     case 'refused':
       return `${head}\n% Connection refused by remote host`;
     case 'unreachable':
@@ -189,6 +191,13 @@ export const SERVICE_COMMANDS: Command[] = [
     i.helpers = i.helpers?.filter((h) => h !== addr);
     if (!i.helpers?.length) i.helpers = undefined;
   } },
+  { syntax: 'ip dhcp relay information trusted', modes: IF_MODES, help: 'Accept DHCP option 82 from a snooping switch on this interface', run: (s) => {
+    requireRouter(s);
+    iface(s).dhcpRelayTrusted = true;
+  } },
+  { syntax: 'no ip dhcp relay information trusted', modes: IF_MODES, help: 'Drop DHCP packets with option 82 and no relay address', run: (s) => void (iface(s).dhcpRelayTrusted = undefined) },
+  { syntax: 'ip dhcp relay information trust-all', modes: ['config'], help: 'Accept DHCP option 82 on every interface', run: (s) => void (requireRouter(s).dhcpRelayTrustAll = true) },
+  { syntax: 'no ip dhcp relay information trust-all', modes: ['config'], help: 'Check option 82 per interface', run: (s) => void (requireRouter(s).dhcpRelayTrustAll = false) },
   { syntax: 'ip address dhcp', modes: IF_MODES, help: 'Get this interface address from a DHCP server', run: (s) => requireRouter(s).enableDhcpClient(iface(s)) },
 
   // NAT
