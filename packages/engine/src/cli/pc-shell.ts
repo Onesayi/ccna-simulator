@@ -52,6 +52,11 @@ export class PcShell implements Shell {
     return this.io.remote !== undefined && this.io.instantHelp;
   }
 
+  /** The command prompt has no Tab completion of its own; inside telnet or SSH the far end completes. */
+  complete(line: string): string | undefined {
+    return this.io.complete(line);
+  }
+
   execute(line: string): string {
     const out = this.io.active ? this.io.execute(line) : this.run(line);
     this.pc.network?.converge();

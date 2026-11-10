@@ -29,7 +29,7 @@ export function DeviceTerminal({ device }: { device: Device }) {
       line = next;
       term.write(line);
     };
-    term.writeln(`Connected to ${device.hostname}. Type ? for help.`);
+    term.writeln(`Connected to ${device.hostname}. Type ? for help, Tab to complete a command.`);
     term.writeln('');
     prompt();
 
@@ -65,6 +65,21 @@ export function DeviceTerminal({ device }: { device: Device }) {
         if (out) term.writeln(out);
         prompt();
         term.write(line);
+      } else if (data === '\t') {
+        // IOS Tab: finish the keyword being typed, or reprint the line when it is ambiguous or unknown.
+        if (shell.masked) return;
+        const done = shell.complete?.(line);
+        if (done === undefined) return;
+        if (done !== line && done.startsWith(line)) {
+          term.write(done.slice(line.length));
+          line = done;
+        } else if (done !== line) {
+          replaceLine(done);
+        } else {
+          term.write('\r\n');
+          prompt();
+          term.write(line);
+        }
       } else if (data >= ' ' && !data.startsWith('\u001b')) {
         line += data;
         // Passwords are typed blind, as on a real console.

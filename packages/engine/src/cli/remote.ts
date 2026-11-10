@@ -13,6 +13,11 @@ export interface Shell {
   /** Set when a remote session ends with `exit`, so the shell that opened it takes over again. */
   readonly closed?: boolean;
   execute(line: string): string;
+  /**
+   * Tab: the line with its last word completed. Returns the line unchanged when the word is
+   * ambiguous or unknown (IOS reprints it), or undefined when this shell has no completion.
+   */
+  complete?(line: string): string | undefined;
 }
 
 /** A question the shell is waiting on, such as `Password:`. The next line typed is the answer. */
@@ -50,6 +55,11 @@ export class Interaction {
 
   get instantHelp(): boolean {
     return this.remote ? Boolean(this.remote.shell.instantHelp) : !this.pending;
+  }
+
+  /** Tab inside a telnet or SSH session goes to the far end; a password prompt completes nothing. */
+  complete(line: string): string | undefined {
+    return this.remote ? this.remote.shell.complete?.(line) : undefined;
   }
 
   ask(prompt: string, answer: (line: string) => string, masked = false, raw = false): void {

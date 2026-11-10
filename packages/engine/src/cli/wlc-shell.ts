@@ -1,5 +1,6 @@
 import { isValidIp, parsePrefix, prefixToMask } from '../core/addressing';
 import { WirelessController, wlanSecurity, type Wlan } from '../devices/wlc';
+import { completeLine } from './completion';
 import { Interaction, type Shell } from './remote';
 
 const SECURITY_NAMES = { open: 'None', 'wpa2-psk': '[WPA2][Auth(PSK)]', 'wpa3-sae': '[WPA3][Auth(SAE)]', 'wpa2-enterprise': '[WPA2][Auth(802.1X)]' } as const;
@@ -149,6 +150,11 @@ export class WlcShell implements Shell {
     const out = this.run(line.trim());
     this.wlc.network?.converge();
     return out;
+  }
+
+  /** Tab completes controller keywords ("sh wl s" -> "show wlan summary"), as on the AireOS CLI. */
+  complete(line: string): string {
+    return completeLine(COMMANDS, line) ?? line;
   }
 
   private run(line: string): string {

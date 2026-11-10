@@ -88,13 +88,13 @@ export const IPV6_COMMANDS: Command[] = [
     );
   } },
 
-  { syntax: 'show ipv6 interface <name...>', modes: EXEC, help: 'brief | <interface>: IPv6 addresses and groups', run: (s, [name]) => {
+  { syntax: 'show ipv6 interface <name...>', modes: EXEC, help: 'brief | <interface>: IPv6 addresses and groups', choices: ['brief'], run: (s, [name]) => {
     const d = requireIp(s);
     if (name && 'brief'.startsWith(name.toLowerCase())) return showIpv6IntBrief(d);
     return showIpv6Interface(d, d.iface(name!));
   } },
   { syntax: 'show ipv6 route', modes: EXEC, help: 'IPv6 routing table', run: (s) => showIpv6Route(requireIp(s)) },
-  { syntax: 'show ipv6 route <filter>', modes: EXEC, help: 'connected | static | local', run: (s, [f]) => {
+  { syntax: 'show ipv6 route <filter>', modes: EXEC, help: 'connected | static | local', choices: ['connected', 'static', 'local'], run: (s, [f]) => {
     const codes: Record<string, string[]> = { connected: ['C'], static: ['S'], local: ['L'] };
     const key = Object.keys(codes).find((k) => k.startsWith(f!.toLowerCase()));
     if (!key) throw new Error(INVALID);

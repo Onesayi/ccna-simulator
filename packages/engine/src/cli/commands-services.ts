@@ -207,7 +207,7 @@ export const SERVICE_COMMANDS: Command[] = [
   { syntax: 'ip address dhcp', modes: IF_MODES, help: 'Get this interface address from a DHCP server', run: (s) => requireRouter(s).enableDhcpClient(iface(s)) },
 
   // NAT
-  { syntax: 'ip nat <side>', modes: IF_MODES, help: 'inside | outside', run: (s, [side]) => {
+  { syntax: 'ip nat <side>', modes: IF_MODES, help: 'inside | outside', choices: ['inside', 'outside'], run: (s, [side]) => {
     requireRouter(s);
     if (abbrev(side, 'inside')) iface(s).nat = 'inside';
     else if (abbrev(side, 'outside')) iface(s).nat = 'outside';
@@ -253,7 +253,7 @@ export const SERVICE_COMMANDS: Command[] = [
     const key = (e: object) => JSON.stringify({ ...e, seq: 0, matches: 0 });
     acl.entries = acl.entries.filter((e) => key(e) !== key(target));
   } },
-  { syntax: 'ip access-group <acl> <direction>', modes: IF_MODES, help: 'Filter packets in | out with an ACL', run: (s, [name, dir]) => {
+  { syntax: 'ip access-group <acl> <direction>', modes: IF_MODES, help: 'Filter packets in | out with an ACL', choices: ['in', 'out'], run: (s, [name, dir]) => {
     requireRouter(s);
     const i = iface(s);
     const d = abbrev(dir, 'in') ? 'in' : abbrev(dir, 'out') ? 'out' : undefined;

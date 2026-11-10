@@ -160,7 +160,7 @@ export const MANAGEMENT_COMMANDS: Command[] = [
   } },
   { syntax: 'login local', modes: ['config-line'], help: 'Ask for a username and password from the local user database', run: (s) => void (line(s).login = 'local') },
   { syntax: 'no login', modes: ['config-line'], help: 'No login at all (anyone gets in)', run: (s) => void (line(s).login = 'none') },
-  { syntax: 'transport input <list...>', modes: ['config-line'], help: 'ssh | telnet | all | none', run: (s, [list]) => void (line(s).transport = transports(list!)) },
+  { syntax: 'transport input <list...>', modes: ['config-line'], help: 'ssh | telnet | all | none', choices: ['ssh', 'telnet', 'all', 'none'], run: (s, [list]) => void (line(s).transport = transports(list!)) },
   { syntax: 'exec-timeout <minutes>', modes: ['config-line'], help: 'Log idle sessions out', run: (s, [m]) => void (line(s).execTimeout = [int(m, 0, 35791), 0]) },
   { syntax: 'exec-timeout <minutes> <seconds>', modes: ['config-line'], help: 'Log idle sessions out', run: (s, [m, sec]) => void (line(s).execTimeout = [int(m, 0, 35791), int(sec, 0, 2147483)]) },
   { syntax: 'logging synchronous', modes: ['config-line'], help: 'Do not let log messages break up typing', run: (s) => void (line(s).loggingSynchronous = true) },
