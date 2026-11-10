@@ -82,6 +82,8 @@ export interface Command {
   syntax: string;
   modes: Mode[];
   help: string;
+  /** Keywords the last argument takes ("access", "trunk"), so Tab and `?` can offer them. */
+  choices?: string[];
   run: (s: Session, args: string[]) => string | void;
 }
 

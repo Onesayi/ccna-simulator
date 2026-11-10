@@ -32,6 +32,26 @@ test('the router console speaks IOS', async ({ page }) => {
   await expect(page.locator('.device-node .name', { hasText: 'EDGE1' })).toBeVisible();
 });
 
+test('Tab completes IOS keywords like a real console', async ({ page }) => {
+  await openDevice(page, 'R1');
+  await page.locator('.console .xterm-screen').click();
+  await page.keyboard.type('en');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect(terminal(page)).toContainText('R1#');
+  for (const word of ['sh', 'ip', 'ro']) {
+    await page.keyboard.type(word);
+    await page.keyboard.press('Tab');
+  }
+  await expect(terminal(page)).toContainText('R1#show ip route');
+  await page.keyboard.press('Enter');
+  await expect(terminal(page)).toContainText('Gateway of last resort');
+  // An ambiguous word is reprinted unchanged on a new line.
+  await page.keyboard.type('c');
+  await page.keyboard.press('Tab');
+  await expect(terminal(page)).toContainText(/R1#c\s*R1#c/);
+});
+
 test('adds and deletes a device', async ({ page }) => {
   await page.getByRole('button', { name: '+ Router' }).click();
   await expect(page.locator('.device-node')).toHaveCount(8);

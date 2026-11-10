@@ -29,6 +29,7 @@ export * from './switching/etherchannel';
 export * from './cli/show-switching';
 export * from './cli/commands-ipv6';
 export * from './cli/remote';
+export * from './cli/completion';
 export * from './devices/ios-device';
 export * from './routing/hsrp';
 export * from './services/discovery';

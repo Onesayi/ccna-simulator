@@ -64,7 +64,7 @@ export const L2_TRAFFIC_COMMANDS: Command[] = [
     const level = parseStormLevel(args!.split(/\s+/));
     (i.stormControl ??= {})[trafficClass(cls)] = level;
   } },
-  { syntax: 'storm-control action <action>', modes: L2_IF_MODES, help: 'shutdown | trap (the default only drops the excess)', run: (s, [action]) => {
+  { syntax: 'storm-control action <action>', modes: L2_IF_MODES, help: 'shutdown | trap (the default only drops the excess)', choices: ['shutdown', 'trap'], run: (s, [action]) => {
     const { i } = port(s);
     const a = (['shutdown', 'trap'] as const).find((x) => abbrev(action, x));
     if (!a) throw new Error(INVALID);
@@ -90,7 +90,7 @@ export const L2_TRAFFIC_COMMANDS: Command[] = [
     if (sw.interfaces.some((i) => i.raGuard === name)) throw new Error(`Policy ${name} is in use; detach it first`);
     sw.raGuardPolicies.delete(name!);
   } },
-  { syntax: 'device-role <role>', modes: ['config-ra-guard'], help: 'host (drop RAs, the default) | router (allow RAs)', run: (s, [role]) => {
+  { syntax: 'device-role <role>', modes: ['config-ra-guard'], help: 'host (drop RAs, the default) | router (allow RAs)', choices: ['host', 'router'], run: (s, [role]) => {
     const r = (['host', 'router'] as const).find((x) => abbrev(role, x));
     if (!r) throw new Error(INVALID);
     s.currentRaGuard!.role = r;

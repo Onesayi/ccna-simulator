@@ -103,7 +103,7 @@ export const SNMP_COMMANDS: Command[] = [
   { syntax: 'no snmp-server location', modes: ['config'], help: 'Clear sysLocation', run: (s) => void (agent(s).location = undefined) },
   { syntax: 'snmp-server contact <text...>', modes: ['config'], help: 'sysContact', run: (s, [t]) => void (agent(s).contact = t) },
   { syntax: 'no snmp-server contact', modes: ['config'], help: 'Clear sysContact', run: (s) => void (agent(s).contact = undefined) },
-  { syntax: 'snmp-server group <name> v3 <level>', modes: ['config'], help: 'SNMPv3 group: noauth | auth | priv', run: (s, [name, lvl]) => group(s, name!, lvl!, '') },
+  { syntax: 'snmp-server group <name> v3 <level>', modes: ['config'], help: 'SNMPv3 group: noauth | auth | priv', choices: ['noauth', 'auth', 'priv'], run: (s, [name, lvl]) => group(s, name!, lvl!, '') },
   { syntax: 'snmp-server group <name> v3 <level> <views...>', modes: ['config'], help: '[read <view>] [write <view>]', run: (s, [name, lvl, rest]) => group(s, name!, lvl!, rest!) },
   { syntax: 'no snmp-server group <name> v3', modes: ['config'], help: 'Delete a v3 group', run: (s, [name]) => void agent(s).groups.delete(name!) },
   { syntax: 'snmp-server user <name> <group> v3', modes: ['config'], help: 'SNMPv3 user without authentication', run: (s, [name, g]) => user(s, name!, g!, '') },

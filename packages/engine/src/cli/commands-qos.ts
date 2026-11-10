@@ -228,7 +228,7 @@ export const QOS_COMMANDS: Command[] = [
   // Catalyst trust boundary
   { syntax: 'mls qos', modes: ['config'], help: 'Enable QoS (untrusted ports then reset DSCP to 0)', run: (s) => void (requireSwitch(s).mlsQos = true) },
   { syntax: 'no mls qos', modes: ['config'], help: 'Disable QoS (every marking passes through)', run: (s) => void (requireSwitch(s).mlsQos = false) },
-  { syntax: 'mls qos trust <what>', modes: L2_IF_MODES, help: 'dscp | cos: keep the marking that arrives on this port', run: (s, [what]) => {
+  { syntax: 'mls qos trust <what>', modes: L2_IF_MODES, help: 'dscp | cos: keep the marking that arrives on this port', choices: ['dscp', 'cos'], run: (s, [what]) => {
     requireSwitch(s);
     const t = (['dscp', 'cos'] as const).find((x) => abbrev(what, x));
     if (!t) throw new Error(INVALID);

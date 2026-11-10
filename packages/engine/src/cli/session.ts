@@ -22,6 +22,7 @@ import { HSRP_COMMANDS } from './commands-hsrp';
 import { FHRP_COMMANDS } from './commands-fhrp';
 import { FILE_COMMANDS } from './commands-files';
 import { Interaction, type Shell } from './remote';
+import { completeLine, continuations, matchingKeywords, previousKeyword, type GrammarEntry } from './completion';
 
 export type { Shell } from './remote';
 import { CONFIG_MODES, EXEC, IF_MODES, L2_IF_MODES, iface, ip, parseVlanList, requireIp, requireSwitch, vlanId, type Command, type Mode, type Session } from './common';
@@ -171,7 +172,7 @@ export class CliSession implements Shell, Session {
     }
     const input = line.trim();
     if (!input) return '';
-    if (input.endsWith('?')) return this.help(input.slice(0, -1).trim());
+    if (input.endsWith('?')) return this.help(line.trimStart().slice(0, line.trimStart().lastIndexOf('?')));
 
     const words = input.split(/\s+/);
     // "do show ip route" from any config mode runs the EXEC command without leaving config.
@@ -251,12 +252,60 @@ export class CliSession implements Shell, Session {
     return hits[0];
   }
 
-  private help(prefix: string): string {
-    const p = prefix.toLowerCase();
-    const lines = COMMANDS.filter((c) => c.modes.includes(this.mode) && c.syntax.startsWith(p) && this.supports(c)).map(
-      (c) => `  ${c.syntax.padEnd(40)} ${c.help}`,
-    );
+  /**
+   * IOS `?`. Straight after a word ("sh?") it lists the keywords that word can start; after a
+   * space ("show ip ?") it lists the commands the line can still become, with `<cr>` when the
+   * words typed already make a whole command. Abbreviations work as they do on Enter.
+   */
+  private help(typed: string): string {
+    const grammar = this.grammar(this.mode);
+    if (typed && !/\s$/.test(typed)) {
+      const keywords = matchingKeywords(grammar, typed);
+      return keywords.length ? keywords.join('  ') : '% Unrecognized command';
+    }
+    const words = typed.trim().split(/\s+/).filter(Boolean);
+    const next = continuations(grammar, words);
+    if (next.ambiguous) return `% Ambiguous command:  "${typed.trim()}"`;
+    // A bare "?" lists the mode's own commands, not every EXEC command again behind "do".
+    const entries = words.length ? next.entries : next.entries.filter((e) => !e.syntax.startsWith('do '));
+    const lines = entries.map((e) => `  ${e.syntax.padEnd(40)} ${e.help}`);
+    if (next.complete) lines.push('  <cr>');
     return lines.length ? lines.join('\n') : '% Unrecognized command';
+  }
+
+  /**
+   * IOS Tab: completes the last word when it can only be one keyword, and adds a space. In a
+   * configuration sub-mode, global configuration commands complete too (they run there as well).
+   * After `interface`, a type abbreviation expands to its full name ("int g" -> "int GigabitEthernet").
+   */
+  complete(line: string): string | undefined {
+    if (this.io.active) return this.io.remote ? this.io.complete(line) : undefined;
+    const modes: Mode[] = this.mode !== 'config' && CONFIG_MODES.includes(this.mode) ? [this.mode, 'config'] : [this.mode];
+    for (const mode of modes) {
+      const grammar = this.grammar(mode);
+      const done = completeLine(grammar, line) ?? this.completeInterface(grammar, line);
+      if (done !== undefined) return done;
+    }
+    return line;
+  }
+
+  private completeInterface(grammar: GrammarEntry[], line: string): string | undefined {
+    const m = /^(.*\s)([a-z-]+)$/i.exec(line);
+    if (!m || !['interface', 'interfaces', 'range'].includes(previousKeyword(grammar, line) ?? '')) return undefined;
+    const [, head = '', partial = ''] = m;
+    const types = new Set(this.device.interfaces.map((i) => /^[A-Za-z-]+/.exec(i.name)![0]));
+    if (this.device instanceof Router) types.add('Loopback');
+    if (this.device instanceof Switch) for (const t of ['Vlan', 'Port-channel']) types.add(t);
+    const hits = [...types].filter((t) => t.toLowerCase().startsWith(partial.toLowerCase()));
+    return hits.length === 1 ? `${head}${hits[0]}` : undefined;
+  }
+
+  /** The commands this device accepts in `mode`; configuration modes also take `do <EXEC command>`. */
+  private grammar(mode: Mode): GrammarEntry[] {
+    const own = COMMANDS.filter((c) => c.modes.includes(mode) && this.supports(c)).flatMap(withChoices);
+    if (!CONFIG_MODES.includes(mode)) return own;
+    const exec = COMMANDS.filter((c) => c.modes.includes('privileged') && this.supports(c) && !c.syntax.startsWith('no ')).flatMap(withChoices);
+    return [...own, ...exec.map((c) => ({ syntax: `do ${c.syntax}`, help: c.help }))];
   }
 
   private supports(c: Command): boolean {
@@ -268,6 +317,12 @@ export class CliSession implements Shell, Session {
     if (/encapsulation|ospf|nat|dhcp|access|helper|bandwidth|router-id|passive|network|default-information|auto-cost|ipv6|standby|vrrp|glbp/.test(c.syntax)) return !isSwitch;
     return true;
   }
+}
+
+/** A command, plus one grammar line per keyword its last argument takes ("switchport mode access"). */
+function withChoices(c: Command): GrammarEntry[] {
+  const head = c.syntax.slice(0, c.syntax.lastIndexOf(' '));
+  return [c, ...(c.choices ?? []).map((k) => ({ syntax: `${head} ${k}`, help: c.help }))];
 }
 
 /** IOS prints link state changes as console syslog messages after `[no] shutdown`. */
@@ -460,7 +515,7 @@ const COMMANDS: Command[] = [
   { syntax: 'encapsulation dot1q <vlan> native', modes: ['config-subif'], help: 'Untagged (native) VLAN for this sub-interface', run: (s, [v]) => {
     Object.assign(iface(s), { encapVlan: vlanId(v), encapNative: true });
   } },
-  { syntax: 'switchport mode <mode>', modes: L2_IF_MODES, help: 'access | trunk', run: (s, [mode]) => {
+  { syntax: 'switchport mode <mode>', modes: L2_IF_MODES, help: 'access | trunk', choices: ['access', 'trunk'], run: (s, [mode]) => {
     requireSwitch(s);
     const m = mode?.toLowerCase();
     if (m !== undefined && 'access'.startsWith(m)) iface(s).mode = 'access';
@@ -506,11 +561,11 @@ const COMMANDS: Command[] = [
 
   // Show commands
   { syntax: 'show running-config', modes: ['privileged'], help: 'Current operating configuration', run: (s) => runningConfig(requireIp(s)) },
-  { syntax: 'show ip interface <name...>', modes: EXEC, help: 'brief | <interface>: IP settings, ACLs and NAT', run: (s, [name]) => {
+  { syntax: 'show ip interface <name...>', modes: EXEC, help: 'brief | <interface>: IP settings, ACLs and NAT', choices: ['brief'], run: (s, [name]) => {
     if (name && 'brief'.startsWith(name.toLowerCase())) return showIpIntBrief(s.device);
     return showIpInterface(s.device.iface(name!));
   } },
-  { syntax: 'show ip route <filter>', modes: EXEC, help: 'connected | static | ospf', run: (s, [f]) => {
+  { syntax: 'show ip route <filter>', modes: EXEC, help: 'connected | static | ospf', choices: ['connected', 'static', 'ospf'], run: (s, [f]) => {
     const codes: Record<string, string[]> = { connected: ['C', 'L'], static: ['S'], ospf: ['O'] };
     const key = Object.keys(codes).find((k) => k.startsWith(f!.toLowerCase()));
     if (!key) throw new Error(`Invalid input detected at '^' marker.`);

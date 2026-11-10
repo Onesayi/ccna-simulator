@@ -100,7 +100,7 @@ export const OSPF_COMMANDS: Command[] = [
   { syntax: 'no ip ospf hello-interval', modes: IF_MODES, help: 'Hello every 10 seconds', run: (s) => setOspf(s, { helloInterval: undefined }) },
   { syntax: 'ip ospf dead-interval <seconds>', modes: IF_MODES, help: 'Seconds before a silent neighbor is declared down', run: (s, [n]) => setOspf(s, { deadInterval: int(n, 1, 65535) }) },
   { syntax: 'no ip ospf dead-interval', modes: IF_MODES, help: 'Four hello intervals', run: (s) => setOspf(s, { deadInterval: undefined }) },
-  { syntax: 'ip ospf network <type>', modes: IF_MODES, help: 'broadcast | point-to-point', run: (s, [t]) => {
+  { syntax: 'ip ospf network <type>', modes: IF_MODES, help: 'broadcast | point-to-point', choices: ['broadcast', 'point-to-point'], run: (s, [t]) => {
     if (abbrev(t, 'point-to-point')) setOspf(s, { network: 'point-to-point' });
     else if (abbrev(t, 'broadcast')) setOspf(s, { network: 'broadcast' });
     else throw new Error(INVALID);
@@ -114,7 +114,7 @@ export const OSPF_COMMANDS: Command[] = [
   { syntax: 'show ip ospf neighbor', modes: EXEC, help: 'OSPF neighbors and adjacency state', run: (s) => showOspfNeighbor(processes(s)) },
   { syntax: 'show ip ospf interface', modes: EXEC, help: 'OSPF settings per interface', run: (s) =>
     processes(s).flatMap((p) => [...p.ifaces.keys()].map((i) => showOspfInterface(p, i))).join('\n') },
-  { syntax: 'show ip ospf interface <name...>', modes: EXEC, help: 'brief | <interface>', run: (s, [name]) => {
+  { syntax: 'show ip ospf interface <name...>', modes: EXEC, help: 'brief | <interface>', choices: ['brief'], run: (s, [name]) => {
     if (abbrev(name, 'brief')) return showOspfInterfaceBrief(processes(s));
     const i = s.device.iface(name!);
     const p = processes(s).find((x) => x.ifaces.has(i)) ?? processes(s)[0];

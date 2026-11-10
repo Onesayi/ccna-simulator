@@ -58,7 +58,7 @@ const CHANNEL_MODES: ChannelMode[] = ['on', 'active', 'passive', 'desirable', 'a
 
 export const SWITCHING_COMMANDS: Command[] = [
   // Spanning tree, global
-  { syntax: 'spanning-tree mode <mode>', modes: ['config'], help: 'pvst | rapid-pvst', run: (s, [mode]) => {
+  { syntax: 'spanning-tree mode <mode>', modes: ['config'], help: 'pvst | rapid-pvst', choices: ['pvst', 'rapid-pvst'], run: (s, [mode]) => {
     const sw = requireSwitch(s);
     const m = mode!.toLowerCase();
     if (m === 'rapid-pvst' || (m.length > 1 && 'rapid-pvst'.startsWith(m))) sw.stp.mode = 'rapid-pvst';
@@ -74,7 +74,7 @@ export const SWITCHING_COMMANDS: Command[] = [
     const sw = requireSwitch(s);
     for (const v of parseVlanList(list!)) sw.stp.priorities.delete(v);
   } },
-  { syntax: 'spanning-tree vlan <list> root <which>', modes: ['config'], help: 'primary | secondary', run: (s, [list, which]) => {
+  { syntax: 'spanning-tree vlan <list> root <which>', modes: ['config'], help: 'primary | secondary', choices: ['primary', 'secondary'], run: (s, [list, which]) => {
     const sw = requireSwitch(s);
     for (const v of parseVlanList(list!)) sw.stp.priorities.set(v, rootMacro(sw, v, which!));
   } },
@@ -104,13 +104,13 @@ export const SWITCHING_COMMANDS: Command[] = [
   { syntax: 'spanning-tree portfast edge', modes: L2_IF_MODES, help: 'Edge port (newer IOS syntax)', run: (s) => void (stpConfig(s).portfast = true) },
   { syntax: 'spanning-tree portfast disable', modes: L2_IF_MODES, help: 'Never an edge port, even with portfast default', run: (s) => void (stpConfig(s).portfast = false) },
   { syntax: 'no spanning-tree portfast', modes: L2_IF_MODES, help: 'Not an edge port', run: (s) => void delete stpConfig(s).portfast },
-  { syntax: 'spanning-tree bpduguard <state>', modes: L2_IF_MODES, help: 'enable | disable: err-disable the port if a BPDU arrives', run: (s, [state]) => {
+  { syntax: 'spanning-tree bpduguard <state>', modes: L2_IF_MODES, help: 'enable | disable: err-disable the port if a BPDU arrives', choices: ['enable', 'disable'], run: (s, [state]) => {
     if (abbrev(state, 'enable')) stpConfig(s).bpduGuard = true;
     else if (abbrev(state, 'disable')) stpConfig(s).bpduGuard = false;
     else throw new Error(INVALID);
   } },
   { syntax: 'no spanning-tree bpduguard', modes: L2_IF_MODES, help: 'Use the global BPDU guard default', run: (s) => void delete stpConfig(s).bpduGuard },
-  { syntax: 'spanning-tree guard <kind>', modes: L2_IF_MODES, help: 'root | none: block the port if it would lead to a new root', run: (s, [kind]) => {
+  { syntax: 'spanning-tree guard <kind>', modes: L2_IF_MODES, help: 'root | none: block the port if it would lead to a new root', choices: ['root', 'none'], run: (s, [kind]) => {
     if (abbrev(kind, 'root')) stpConfig(s).guardRoot = true;
     else if (abbrev(kind, 'none')) delete stpConfig(s).guardRoot;
     else throw new Error(kind && abbrev(kind, 'loop') ? 'Loop guard is not supported by this simulator' : INVALID);
@@ -126,7 +126,7 @@ export const SWITCHING_COMMANDS: Command[] = [
   { syntax: 'no spanning-tree port-priority', modes: L2_IF_MODES, help: 'Default port priority (128)', run: (s) => void delete stpConfig(s).priority },
 
   // EtherChannel
-  { syntax: 'channel-group <n> mode <mode>', modes: L2_IF_MODES, help: 'on | active | passive | desirable | auto', run: (s, [n, mode]) => {
+  { syntax: 'channel-group <n> mode <mode>', modes: L2_IF_MODES, help: 'on | active | passive | desirable | auto', choices: ['on', 'active', 'passive', 'desirable', 'auto'], run: (s, [n, mode]) => {
     const { sw, i } = port(s);
     const m = CHANNEL_MODES.find((x) => abbrev(mode, x));
     if (!m) throw new Error(INVALID);
@@ -151,7 +151,7 @@ export const SWITCHING_COMMANDS: Command[] = [
     ps.maximum = max;
   } },
   { syntax: 'no switchport port-security maximum', modes: L2_IF_MODES, help: 'Back to one address', run: (s) => void (portSecurity(s).maximum = 1) },
-  { syntax: 'switchport port-security violation <mode>', modes: L2_IF_MODES, help: 'shutdown | restrict | protect', run: (s, [mode]) => {
+  { syntax: 'switchport port-security violation <mode>', modes: L2_IF_MODES, help: 'shutdown | restrict | protect', choices: ['shutdown', 'restrict', 'protect'], run: (s, [mode]) => {
     const m = (['shutdown', 'restrict', 'protect'] as ViolationMode[]).find((x) => abbrev(mode, x));
     if (!m) throw new Error(INVALID);
     portSecurity(s).violation = m;
