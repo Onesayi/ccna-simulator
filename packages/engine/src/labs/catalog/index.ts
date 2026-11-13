@@ -16,6 +16,7 @@ import { serviceLabs } from './services';
 import { switchingLabs } from './switching';
 import { wirelessLabs } from './wireless';
 import { managementLabs } from './management';
+import { netconfLabs } from './netconf';
 
 /** Suggested study order: fundamentals, switching, routing, services, then the mixed troubleshooting and capstone labs. */
 const ORDER = [
@@ -78,6 +79,8 @@ const ORDER = [
   'snmp-v2c-traps',
   'snmpv3-secure',
   'restconf-api',
+  'netconf-yang',
+  'netconf-troubleshoot',
   'ansible-playbook',
   'capture-the-fault',
   'fix-the-office',
@@ -85,7 +88,7 @@ const ORDER = [
   'capstone-branch-internet',
 ];
 
-const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs, ...wirelessLabs, ...managementLabs, ...l2ProtectionLabs, ...qosLabs, ...fileLabs];
+const ALL = [...infrastructureLabs, ...ipv6Labs, ...switchingLabs, ...stpLabs, ...discoveryLabs, ...routingLabs, ...ospfLabs, ...fhrpLabs, ...serviceLabs, ...securityLabs, ...arpSecurityLabs, ...operationsLabs, ...wirelessLabs, ...managementLabs, ...netconfLabs, ...l2ProtectionLabs, ...qosLabs, ...fileLabs];
 
 export const LABS: LabDefinition[] = [
   ...ORDER.map((id) => ALL.find((l) => l.id === id)).filter((l): l is LabDefinition => l !== undefined),

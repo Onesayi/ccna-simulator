@@ -6,7 +6,7 @@ const objective = (page: import('@playwright/test').Page, text: string) =>
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(64);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(66);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 
@@ -111,4 +111,30 @@ test('a WLAN built in the controller GUI carries a wireless laptop', async ({ pa
   await openDevice(page, 'LAPTOP1');
   await typeLines(page, 'netsh wlan connect ssid=Staff key=CorpWiFi2024');
   await expect(objective(page, 'LAPTOP1 is on Staff')).toHaveClass(/pass/);
+});
+
+test('NETCONF from the server console configures a router', async ({ page }) => {
+  await page.goto('./#/labs/netconf-yang');
+  await openDevice(page, 'R1');
+  await typeLines(
+    page,
+    'enable',
+    'conf t',
+    'username admin privilege 15 secret Cisco123',
+    'aaa new-model',
+    'aaa authentication login default local',
+    'aaa authorization exec default local',
+    'netconf-yang',
+    'end',
+  );
+  await expect(objective(page, 'NETCONF-YANG is enabled')).toHaveClass(/pass/);
+  await openDevice(page, 'SRV');
+  await typeLines(page, 'netconf-console --host 192.168.1.1 -u admin -p Cisco123 --edit-config loopback.xml');
+  await expect(terminal(page)).toContainText('<ok/>');
+  await expect(objective(page, 'Loopback0 is 10.0.0.1/32')).toHaveClass(/pass/);
+  // A raw session: the password is masked, then the router's hello ends with ]]>]]>.
+  await typeLines(page, 'ssh admin@192.168.1.1 -p 830 -s netconf', 'Cisco123');
+  await expect(terminal(page)).toContainText('</hello>');
+  await expect(terminal(page)).toContainText(']]>]]>');
+  await page.screenshot({ path: 'test-results/netconf-ssh.png' });
 });

@@ -45,6 +45,7 @@ export * from './services/aaa';
 export * from './services/aaa-server';
 export * from './services/snmp';
 export * from './services/restconf';
+export * from './services/netconf';
 export * from './services/ansible';
 export * from './devices/ap';
 export * from './devices/wlc';
