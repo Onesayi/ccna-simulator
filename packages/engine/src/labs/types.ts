@@ -1,3 +1,4 @@
+import type { DnsType } from '../core/frames';
 import type { Device } from '../devices/device';
 
 /** The five domains of the CCNA 200-301 v2.0 blueprint. */
@@ -27,6 +28,8 @@ export interface LabDeviceSpec {
   ip?: string;
   /** PCs only. */
   gateway?: string;
+  /** PCs only: a static DNS server. */
+  dns?: string;
   /** PCs only: "2001:db8:1::10/64", or "auto" for SLAAC. */
   ipv6?: string;
   /** PCs only: the IPv6 default gateway. */
@@ -205,13 +208,25 @@ export type Check =
   | { type: 'qosTrust'; device: string; interface?: string; trust?: 'dscp' | 'cos' | 'none' }
   /** Pings from `from` to `to` arrive carrying this DSCP value. */
   | { type: 'dscpReceived'; from: string; to: string; dscp: number }
+  /** The DNS server a PC uses (static or from DHCP), or one of a router's or switch's `ip name-server` entries. */
+  | { type: 'nameServer'; device: string; address: string }
+  /** `ip domain lookup` on or off. */
+  | { type: 'domainLookup'; device: string; enabled: boolean }
+  /** A static `ip host` entry, optionally with this address. */
+  | { type: 'ipHost'; device: string; name: string; address?: string }
+  /** The server's zone file for `zone` loads without errors. */
+  | { type: 'zoneLoaded'; device: string; zone: string }
+  /** The DNS server answers `name` with a record of type `rtype` (following CNAMEs), optionally with this data. */
+  | { type: 'dnsRecord'; device: string; name: string; rtype: DnsType; value?: string }
+  /** `from` looks the name up with its own DNS settings and gets this address (or `fail`). */
+  | { type: 'dnsResolve'; from: string; name: string; expect: string }
   /** A multiple-choice question; `answer` is the index of the right option. */
   | { type: 'quiz'; question: string; options: string[]; answer: number; explain?: string };
 
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery', 'stormProbe', 'rogueRa', 'dscpReceived'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery', 'stormProbe', 'rogueRa', 'dscpReceived', 'dnsResolve'];
 
 export interface Objective {
   text: string;

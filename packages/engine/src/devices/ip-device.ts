@@ -7,7 +7,7 @@ import {
   type Ipv4Address,
   type MacAddress,
 } from '../core/addressing';
-import type { ArpPacket, Frame, IpPacket, Packet, TcpPacket, TftpMessage, TransferMessage, UdpPacket } from '../core/frames';
+import type { ArpPacket, DnsMessage, DnsType, Frame, IpPacket, Packet, TcpPacket, TftpMessage, TransferMessage, UdpPacket } from '../core/frames';
 import type { ScheduledEvent } from '../core/scheduler';
 import { Ipv6Stack } from '../ipv6/stack';
 import { Device, type Interface } from './device';
@@ -63,6 +63,9 @@ export interface ConnectResult {
   /** Who sent the ICMP error, for `unreachable`. */
   from?: Ipv4Address;
 }
+
+/** The outcome of one DNS query: the server's reply, or why there was none. */
+export type DnsQueryResult = { status: 'answer'; reply: DnsMessage } | { status: 'timeout' | 'no-route' };
 
 export type TransferProtocol = 'tftp' | 'ftp' | 'scp' | 'sftp';
 
@@ -167,6 +170,8 @@ export abstract class IpDevice extends Device {
   private nextPort = 49152;
   private transferId = 1;
   private readonly transferReplies = new Map<number, TftpMessage | TransferMessage>();
+  private dnsId = 0x1a2b;
+  private readonly dnsReplies = new Map<number, DnsMessage>();
 
   constructor(hostname: string) {
     super(hostname);
@@ -483,6 +488,30 @@ export abstract class IpDevice extends Device {
     return { status: 'ok', data: reply.data };
   }
 
+  /**
+   * Sends one DNS query (UDP 53) and runs the topology until the server answers. A query to
+   * 255.255.255.255 is broadcast out of every addressed interface, as IOS does with no name server.
+   */
+  dnsQuery(server: Ipv4Address, name: string, qtype: DnsType, rd = true): DnsQueryResult {
+    const id = this.dnsId++ & 0xffff;
+    const dns: DnsMessage = { id, response: false, name, qtype, rd };
+    const srcPort = this.nextPort++;
+    if (server === LIMITED_BROADCAST) {
+      const out = this.ipInterfaces();
+      if (!out.length) return { status: 'no-route' };
+      for (const i of out) this.transmitL3(i, BROADCAST_MAC, { kind: 'udp', src: i.ip!.address, dst: server, ttl: this.initialTtl, srcPort, dstPort: 53, dns });
+    } else if (!this.originate(server, (src) => ({ kind: 'udp', src, dst: server, ttl: this.initialTtl, srcPort, dstPort: 53, dns }))) return { status: 'no-route' };
+    this.network?.run();
+    const reply = this.dnsReplies.get(id);
+    this.dnsReplies.delete(id);
+    return reply ? { status: 'answer', reply } : { status: 'timeout' };
+  }
+
+  /** A DNS response addressed to us. Routers running `ip dns server` override this to relay forwarded answers. */
+  protected receiveDnsReply(p: UdpPacket): void {
+    this.dnsReplies.set(p.dns!.id, p.dns!);
+  }
+
   private expect(key: string, timeoutMs: number, resolve: (reply: IpPacket | undefined) => void): void {
     const waiter: Waiter = { resolve };
     waiter.timer = this.schedule(timeoutMs, `timeout ${key}`, () => {
@@ -579,6 +608,7 @@ export abstract class IpDevice extends Device {
       return this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: this.initialTtl, srcPort: p.dstPort, dstPort: p.srcPort, flags });
     }
     if (p.kind === 'udp' && p.tftp && p.dstPort !== 69) return void this.transferReplies.set(p.tftp.id, p.tftp);
+    if (p.kind === 'udp' && p.dns?.response && p.srcPort === 53) return this.receiveDnsReply(p);
     if (p.kind === 'udp') this.handleUdp(p);
   }
 
@@ -612,9 +642,9 @@ export abstract class IpDevice extends Device {
     const entry = this.arpTable.get(arpTarget);
     if (entry && entry.iface === iface) return this.transmitL3(iface, entry.mac, p);
 
-    // Protocols with their own retransmission (TACACS+ over TCP, RADIUS, SNMP, CAPWAP, file transfers) survive
+    // Protocols with their own retransmission (TACACS+ over TCP, RADIUS, SNMP, CAPWAP, DNS, file transfers) survive
     // the dropped first packet on IOS, so they wait for ARP here instead of modeling retries.
-    const hold = this.queueDuringArp || (p.kind === 'tcp' && (p.tacacs ?? p.transfer) !== undefined) || (p.kind === 'udp' && (p.radius ?? p.snmp ?? p.capwap ?? p.tftp) !== undefined);
+    const hold = this.queueDuringArp || (p.kind === 'tcp' && (p.tacacs ?? p.transfer) !== undefined) || (p.kind === 'udp' && (p.radius ?? p.snmp ?? p.capwap ?? p.tftp ?? p.dns) !== undefined);
     const queue = this.pendingArp.get(arpTarget);
     if (queue) {
       if (hold) queue.push(p);

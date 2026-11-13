@@ -15,7 +15,8 @@ describe('IOS CLI edge cases', () => {
     const { run } = on(new Router('R1'));
     expect(run('   ')).toBe('');
     expect(run('e')).toMatch(/% Ambiguous command:\s+"e"/);
-    expect(run('bogus')).toMatch(/Invalid input/);
+    expect(run('bogus')).toMatch(/% Unknown command or computer name/);
+    expect(run('show bogus')).toMatch(/Invalid input/);
   });
 
   it('answers ? with only the commands this device supports', () => {

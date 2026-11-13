@@ -4,7 +4,7 @@ import { protocolOf } from './dissect';
 export type FramePredicate = (frame: Frame) => boolean;
 
 /** Words a filter accepts on their own, like Wireshark's protocol filters. */
-const PROTOCOLS = ['arp', 'icmp', 'tcp', 'udp', 'dhcp', 'hsrp', 'vrrp', 'glbp', 'tftp', 'ftp', 'ssh', 'ntp', 'ospf', 'icmpv6', 'stp', 'lacp', 'pagp', 'cdp', 'lldp', 'radius', 'tacacs', 'snmp', 'capwap', 'eapol', 'wlan'];
+const PROTOCOLS = ['arp', 'icmp', 'tcp', 'udp', 'dhcp', 'hsrp', 'vrrp', 'glbp', 'tftp', 'ftp', 'ssh', 'ntp', 'ospf', 'icmpv6', 'stp', 'lacp', 'pagp', 'cdp', 'lldp', 'radius', 'tacacs', 'snmp', 'dns', 'capwap', 'eapol', 'wlan'];
 
 const FIELDS = ['ip.dsfield.dscp', 'ip.addr', 'ip.src', 'ip.dst', 'eth.addr', 'eth.src', 'eth.dst', 'vlan', 'vlan.id', 'tcp.port', 'udp.port'];
 

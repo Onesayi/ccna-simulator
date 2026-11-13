@@ -1,5 +1,5 @@
 import { BROADCAST_MAC } from '../core/addressing';
-import type { Frame, IpPacket, Packet, TcpPacket, UdpPacket } from '../core/frames';
+import type { DnsMessage, DnsRecord, Frame, IpPacket, Packet, TcpPacket, UdpPacket } from '../core/frames';
 import { dscpName } from '../services/dscp';
 
 /** One row of the capture list, Wireshark style. */
@@ -26,7 +26,7 @@ export function protocolOf(p: Packet): string {
     case 'tcp':
       return p.tacacs ? 'TACACS+' : p.transfer ? (p.transfer.protocol === 'ftp' ? 'FTP' : 'SSHv2') : 'TCP';
     case 'udp':
-      return p.dhcp ? 'DHCP' : p.hsrp ? 'HSRP' : p.glbp ? 'GLBP' : p.tftp ? 'TFTP' : p.ntp ? 'NTP' : p.radius ? 'RADIUS' : p.snmp ? 'SNMP' : p.capwap ? (p.capwap.type === 'data' ? 'CAPWAP-Data' : 'CAPWAP') : 'UDP';
+      return p.dns ? 'DNS' : p.dhcp ? 'DHCP' : p.hsrp ? 'HSRP' : p.glbp ? 'GLBP' : p.tftp ? 'TFTP' : p.ntp ? 'NTP' : p.radius ? 'RADIUS' : p.snmp ? 'SNMP' : p.capwap ? (p.capwap.type === 'data' ? 'CAPWAP-Data' : 'CAPWAP') : 'UDP';
     case 'ospf':
       return 'OSPF';
     case 'vrrp':
@@ -117,6 +117,37 @@ function tftpInfo(t: NonNullable<UdpPacket['tftp']>): string {
   return `Error Code, Message: ${t.error}`;
 }
 
+const RCODE_INFO: Record<string, string> = { NXDOMAIN: 'No such name', SERVFAIL: 'Server failure', REFUSED: 'Refused' };
+
+function dnsRdata(r: DnsRecord): string {
+  if (r.type === 'MX') return `MX ${r.preference} ${r.data}`;
+  return `${r.type} ${r.data}`;
+}
+
+/** "Standard query 0x1a2b A www.ccna.lab", and for responses the rcode and answers, as Wireshark shows them. */
+function dnsInfo(d: DnsMessage): string {
+  const id = `0x${d.id.toString(16).padStart(4, '0')}`;
+  if (!d.response) return `Standard query ${id} ${d.qtype} ${d.name}`;
+  const rcode = d.rcode && d.rcode !== 'NOERROR' ? ` ${RCODE_INFO[d.rcode]}` : '';
+  const answers = (d.answers ?? []).map(dnsRdata).join(' ');
+  return `Standard query response ${id}${rcode} ${d.qtype} ${d.name}${answers ? ` ${answers}` : ''}`;
+}
+
+function dnsLayer(d: DnsMessage): Layer {
+  const flags = [d.response ? 'Standard query response' : 'Standard query', d.rd ? 'recursion desired' : '', d.response && d.aa ? 'authoritative' : '', d.response && d.ra ? 'recursion available' : '', d.response ? (d.rcode === 'NOERROR' || !d.rcode ? 'No error' : RCODE_INFO[d.rcode]!) : '']
+    .filter(Boolean)
+    .join(', ');
+  const fields: [string, string][] = [
+    ['Transaction ID', `0x${d.id.toString(16).padStart(4, '0')}`],
+    ['Flags', flags],
+    ['Query', `${d.name}: type ${d.qtype}, class IN`],
+  ];
+  for (const [section, records] of [['Answer', d.answers], ['Authority', d.authority], ['Additional', d.additional]] as const) {
+    for (const r of records ?? []) fields.push([section, `${r.name}: type ${r.type}, class IN, ${r.type === 'SOA' ? `mname ${r.data}` : dnsRdata(r).slice(r.type.length + 1)}`]);
+  }
+  return { title: `Domain Name System (${d.response ? 'response' : 'query'})`, fields };
+}
+
 function info(p: Packet): string {
   switch (p.kind) {
     case 'arp':
@@ -129,6 +160,7 @@ function info(p: Packet): string {
       if (p.tacacs) return `TACACS+ ${p.tacacs.type === 'authen' ? 'Authentication' : p.tacacs.type === 'author' ? 'Authorization' : 'Accounting'} ${p.dstPort === 49 ? 'Request' : 'Reply'} (body encrypted)`;
       return `${p.srcPort} → ${p.dstPort} [${p.flags === 'syn' ? 'SYN' : p.flags === 'syn-ack' ? 'SYN, ACK' : p.flags === 'psh' ? 'PSH, ACK' : 'RST'}]`;
     case 'udp': {
+      if (p.dns) return dnsInfo(p.dns);
       if (p.radius) return `${RADIUS_NAMES[p.radius.code]} id=${p.radius.id}${p.radius.username ? `, User-Name ${p.radius.username}` : ''}`;
       if (p.snmp) return snmpInfo(p.snmp);
       if (p.capwap) {
@@ -305,6 +337,7 @@ function transport(p: IpPacket): Layer[] {
           ],
         });
       }
+      if (p.dns) layers.push(dnsLayer(p.dns));
       if (p.hsrp) layers.push({ title: 'Cisco Hot Standby Router Protocol', fields: [['Version', String(p.hsrp.version)], ['Group', String(p.hsrp.group)], ['State', p.hsrp.state], ['Priority', String(p.hsrp.priority)], ...(p.hsrp.vip ? [['Virtual IP Address', p.hsrp.vip] as [string, string]] : [])] });
       if (p.glbp) {
         const g = p.glbp;

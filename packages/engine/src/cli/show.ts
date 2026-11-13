@@ -184,6 +184,8 @@ export function runningConfig(d: Device & IpDevice): string {
   if (ios) {
     const access = ios.mgmt.globalConfig().filter((l) => l !== 'service password-encryption');
     if (access.length) out.push(...access, '!');
+    const dns = ios.dns.config();
+    if (dns.length) out.push(...dns, '!');
     const aaa = ios.aaa.config();
     if (aaa.length) out.push(...aaa, '!');
     const tz = ios.ntp.config().filter((l) => l.startsWith('clock'));

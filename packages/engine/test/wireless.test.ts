@@ -291,7 +291,7 @@ describe('Wi-Fi clients', () => {
     const wired = new PcShell(t.net.add(new Pc('PC9')));
     expect(wired.execute('netsh wlan show networks')).toBe('There is no wireless interface on the system.');
     expect(wired.execute('netsh interface show')).toContain('not found');
-    expect(wired.execute('help')).not.toContain('netsh');
+    expect(wired.execute('help')).not.toContain('netsh wlan');
     expect(t.pc.execute('help')).toContain('netsh wlan connect');
     expect(t.pc.execute('netsh wlan connect')).toContain('Usage');
     expect(t.pc.execute('netsh wlan bogus')).toContain('Usage');

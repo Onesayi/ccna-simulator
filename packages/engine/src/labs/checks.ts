@@ -46,6 +46,11 @@ function routerOf(d: Device): Router {
   return d;
 }
 
+function serverOf(d: Device): Server {
+  if (!(d instanceof Server)) throw new Error(`${d.hostname} is not a server`);
+  return d;
+}
+
 function iosOf(d: Device): IosDevice {
   if (!(d instanceof IosDevice)) throw new Error(`${d.hostname} is not a router or switch`);
   return d;
@@ -842,6 +847,55 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       const arrived = [...net.trace].reverse().find((e) => e.no > start && e.frame.payload.kind === 'icmp' && e.frame.payload.type === 'echo-request' && e.frame.payload.dst === check.to);
       const dscp = arrived && arrived.frame.payload.kind === 'icmp' ? (arrived.frame.payload.dscp ?? 0) : 0;
       return dscp === check.dscp ? ok : fail(`Pings from ${from.hostname} arrive marked ${dscpName(dscp)} (${dscp})`);
+    }
+    case 'nameServer': {
+      const d = device(check.device);
+      if (d instanceof Pc) {
+        if (!d.dnsServer) return fail(`${d.hostname} has no DNS server`);
+        return d.dnsServer === check.address ? ok : fail(`${d.hostname} asks ${d.dnsServer} for names`);
+      }
+      const servers = iosOf(d).dns.nameServers;
+      if (!servers.length) return fail(`${d.hostname} has no ip name-server`);
+      return servers.includes(check.address) ? ok : fail(`${d.hostname} asks ${servers.join(', ')}`);
+    }
+    case 'domainLookup': {
+      const d = iosOf(device(check.device));
+      return d.dns.lookup === check.enabled ? ok : fail(`Domain lookup is ${d.dns.lookup ? 'on' : 'off'} on ${d.hostname}`);
+    }
+    case 'ipHost': {
+      const d = iosOf(device(check.device));
+      const e = d.dns.host(check.name);
+      if (!e?.perm) return fail(`${d.hostname} has no ip host entry for ${check.name}`);
+      return !check.address || e.addresses.includes(check.address) ? ok : fail(`${e.name} maps to ${e.addresses.join(', ')}`);
+    }
+    case 'zoneLoaded': {
+      const srv = serverOf(device(check.device));
+      const zone = srv.dnsZones.zones.find((z) => z.origin === check.zone);
+      if (!zone) return fail(`${srv.hostname} has no zone file for ${check.zone}`);
+      return zone.loaded ? ok : fail(`The ${check.zone} zone does not load: ${zone.problems.find((p) => p.fatal)!.message}`);
+    }
+    case 'dnsRecord': {
+      const srv = serverOf(device(check.device));
+      const reply = srv.dnsZones.answer({ id: 0, response: false, name: check.name, qtype: check.rtype });
+      if (reply.rcode !== 'NOERROR') return fail(`${srv.hostname} answers ${check.name} with ${reply.rcode}`);
+      const hits = (reply.answers ?? []).filter((a) => a.type === check.rtype);
+      if (!hits.length) return fail(`${check.name} has no ${check.rtype} record`);
+      return !check.value || hits.some((h) => h.data === check.value) ? ok : fail(`${check.name} ${check.rtype} is ${hits.map((h) => h.data).join(', ')}`);
+    }
+    case 'dnsResolve': {
+      const d = device(check.from);
+      let address: string | undefined;
+      if (d instanceof Pc) address = d.resolveName(check.name).address;
+      else {
+        // Leave the learner's cache as it was.
+        const ios = iosOf(d);
+        const cached = new Set(ios.dns.hosts.keys());
+        address = ios.resolveHost(check.name).address;
+        for (const k of ios.dns.hosts.keys()) if (!cached.has(k)) ios.dns.hosts.delete(k);
+      }
+      if (check.expect === 'fail') return address ? fail(`${d.hostname} resolved ${check.name} to ${address}`) : ok;
+      if (!address) return fail(`${d.hostname} cannot resolve ${check.name}`);
+      return address === check.expect ? ok : fail(`${d.hostname} resolves ${check.name} to ${address}`);
     }
     case 'quiz':
       throw new Error('Quiz checks are graded from the answer, not the network');

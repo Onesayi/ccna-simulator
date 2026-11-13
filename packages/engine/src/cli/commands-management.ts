@@ -4,6 +4,7 @@ import type { Transport } from '../services/management';
 import { parseClockSet } from '../services/ntp';
 import { EXEC, INVALID, abbrev, iface, int, ip, requireIos, requireIp, type Command, type Session } from './common';
 import { beginLogin, parseSsh } from './remote';
+import { resolveHost } from './commands-dns';
 
 /** CDP and LLDP, device access (users, passwords, lines, SSH) and the clock and NTP. */
 
@@ -197,13 +198,16 @@ export const MANAGEMENT_COMMANDS: Command[] = [
   { syntax: 'no ip ssh version', modes: ['config'], help: 'Accept both SSH versions (1.99)', run: (s) => void (requireIos(s).mgmt.sshVersion = undefined) },
   { syntax: 'show ip ssh', modes: EXEC, help: 'SSH server state and version', run: (s) => showIpSsh(s) },
   { syntax: 'ssh <args...>', modes: EXEC, help: '-l <user> <ip>: open an SSH session', run: (s, [rest]) => {
-    const { user, host } = parseSsh(rest!.split(/\s+/));
-    if (!host || !isValidIp(host)) throw new Error(INVALID);
+    const { user, host: target } = parseSsh(rest!.split(/\s+/));
+    if (!target || (/^[\d.]+$/.test(target) && !isValidIp(target))) throw new Error(INVALID);
     if (!user) throw new Error('No user specified');
+    const resolved = resolveHost(s, target);
+    if ('error' in resolved) return resolved.error;
+    const host = resolved.address;
     const d = requireIp(s);
     const r = d.connect(host, 22);
     d.network?.run();
-    if (r.status === 'open') return beginLogin(s.io, d, host, 'ssh', user, (dev, prio) => s.spawn(dev, prio));
+    if (r.status === 'open') return resolved.banner + beginLogin(s.io, d, host, 'ssh', user, (dev, prio) => s.spawn(dev, prio));
     if (r.status === 'refused') return '% Connection refused by remote host';
     if (r.status === 'timeout') return '% Connection timed out; remote host not responding';
     return '% Destination unreachable; gateway or host down';

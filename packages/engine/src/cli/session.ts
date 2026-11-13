@@ -21,6 +21,8 @@ import { MANAGEMENT_COMMANDS } from './commands-management';
 import { HSRP_COMMANDS } from './commands-hsrp';
 import { FHRP_COMMANDS } from './commands-fhrp';
 import { FILE_COMMANDS } from './commands-files';
+import { DNS_COMMANDS, resolveHost, unknownWord } from './commands-dns';
+import { telnet } from './commands-services';
 import { Interaction, type Shell } from './remote';
 import { completeLine, continuations, matchingKeywords, previousKeyword, type GrammarEntry } from './completion';
 
@@ -196,6 +198,11 @@ export class CliSession implements Shell, Session {
       if (!match) this.mode = saved;
     }
     if (match === 'ambiguous') return `% Ambiguous command:  "${input}"`;
+    if (!match && EXEC.includes(this.mode) && words.length === 1 && !this.startsCommand(words[0]!)) {
+      const out = unknownWord(this, words[0]!, telnet);
+      this.device.network?.converge();
+      return out;
+    }
     if (!match) return `% Invalid input detected at '^' marker.`;
     const logged = this.device.log.length;
     const outputs: string[] = [];
@@ -215,6 +222,12 @@ export class CliSession implements Shell, Session {
     this.device.network?.converge();
     const messages = this.device.log.slice(logged);
     return [out, ...messages].filter(Boolean).join('\n');
+  }
+
+  /** True when some command in this mode starts with this word ("sh" for show). */
+  private startsCommand(word: string): boolean {
+    const w = word.toLowerCase();
+    return COMMANDS.some((c) => c.modes.includes(this.mode) && !c.syntax.startsWith('<') && c.syntax.split(' ')[0]!.startsWith(w));
   }
 
   private match(words: string[], negated: boolean): { cmd: Command; args: string[] } | 'ambiguous' | undefined {
@@ -440,10 +453,12 @@ const COMMANDS: Command[] = [
     if (!Number.isInteger(n) || n < 1 || n > 1000) throw new Error('Invalid repeat count');
     return iosPing(s, dst!, n);
   } },
-  { syntax: 'traceroute <ip>', modes: EXEC, help: 'Trace route to destination (IPv4 or IPv6)', run: (s, [dst]) => {
-    const result = requireIp(s).tracerouteAny(target(dst!));
+  { syntax: 'traceroute <ip>', modes: EXEC, help: 'Trace route to destination (IPv4, IPv6 or a name)', run: (s, [dst]) => {
+    const t = target(s, dst!);
+    if ('error' in t) return t.error;
+    const result = requireIp(s).tracerouteAny(t.address);
     s.device.network?.run();
-    return formatIosTraceroute(result);
+    return t.banner + formatIosTraceroute(result);
   } },
 
   // Global routing config
@@ -595,19 +610,24 @@ const COMMANDS: Command[] = [
   ...QOS_COMMANDS,
   ...AAA_COMMANDS,
   ...SNMP_COMMANDS,
+  ...DNS_COMMANDS,
 ];
 
-function target(dst: string): string {
+/** An IPv6 address, an IPv4 address, or a host name to resolve first. */
+function target(s: Session, dst: string): { address: string; banner: string } | { error: string } {
   if (dst.includes(':')) {
     if (!isValidIpv6(dst)) throw new Error(INVALID_RANGE);
-    return normaliseIpv6(dst);
+    return { address: normaliseIpv6(dst), banner: '' };
   }
-  return ip(dst);
+  if (/^[\d.]+$/.test(dst)) return { address: ip(dst), banner: '' };
+  return resolveHost(s, dst);
 }
 
 function iosPing(s: Session, dst: string, count: number, v6 = false): string {
   if (v6 && !dst.includes(':')) throw new Error(INVALID_RANGE);
-  const results = requireIp(s).pingAny(target(dst), count);
+  const t = target(s, dst);
+  if ('error' in t) return t.error;
+  const results = requireIp(s).pingAny(t.address, count);
   s.device.network?.run();
-  return formatIosPing(dst.includes(':') ? dst.toUpperCase() : dst, results);
+  return t.banner + formatIosPing(t.address.includes(':') ? t.address.toUpperCase() : t.address, results);
 }

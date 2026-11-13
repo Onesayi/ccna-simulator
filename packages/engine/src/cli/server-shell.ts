@@ -11,6 +11,7 @@ import { configFile } from './commands-files';
 import { deviceAt, type Shell } from './remote';
 import { CliSession } from './session';
 import { runningConfig } from './show';
+import { canonicalName, checkZoneReport, parseZone } from '../services/dns';
 
 const SERVER_HELP = `Server commands (the PC commands work too: ping, traceroute, ipconfig, ssh, telnet):
   snmpget -v 2c -c <community> <ip> <oid>...            Read objects (v1, v2c)
@@ -30,7 +31,10 @@ const SERVER_HELP = `Server commands (the PC commands work too: ping, traceroute
   adduser <name> <password> | deluser <name>            File server account (opens FTP 21, SCP/SFTP 22)
   cat /var/log/xferlog                                  Files sent and received (TFTP is always on)
   ls | cat <file>                                       Files on the server
-  cat > <file> <<EOF ... EOF                            Write a file (or use the Files tab)`;
+  cat > <file> <<EOF ... EOF                            Write a file (or use the Files tab); >> appends
+  named-checkzone <zone> <file>                         DNS server: check a zone file (<zone>.zone or db.<zone>)
+  rndc reload                                           DNS server: load every zone and report
+  cat /var/log/named.log                                DNS queries answered`;
 
 /** Splits a command line on spaces, keeping 'quoted strings' and "quoted strings" together. */
 export function splitArgs(line: string): string[] {
@@ -104,8 +108,8 @@ export class ServerShell extends PcShell {
   }
 
   protected override run(line: string): string {
-    const heredoc = /^cat\s*>\s*(\S+)(?:\s*<<\s*['"]?(\w+)['"]?)?\s*$/.exec(line.trim());
-    if (heredoc) return this.writeFile(heredoc[1]!, heredoc[2] ?? 'EOF');
+    const heredoc = /^cat\s*(>>?)\s*(\S+)(?:\s*<<\s*['"]?(\w+)['"]?)?\s*$/.exec(line.trim());
+    if (heredoc) return this.writeFile(heredoc[2]!, heredoc[3] ?? 'EOF', heredoc[1] === '>>');
     const args = splitArgs(line.trim());
     const [cmd = '', ...rest] = args;
     switch (cmd) {
@@ -134,6 +138,10 @@ export class ServerShell extends PcShell {
         return [...this.server.files.keys()].sort().join('  ');
       case 'cat':
         return this.cat(rest[0]);
+      case 'named-checkzone':
+        return this.checkZone(rest);
+      case 'rndc':
+        return this.rndc(rest);
       case 'ansible-playbook':
         return this.playbook(rest);
       case 'curl':
@@ -155,12 +163,13 @@ export class ServerShell extends PcShell {
   // ---------------------------------------------------------------- files
 
   /** `cat > file <<EOF`: the lines that follow, up to the terminator, become the file. */
-  private writeFile(path: string, end: string): string {
+  private writeFile(path: string, end: string, append = false): string {
     const name = path.replace(/^(\/root\/|\.\/)/, '');
     const lines: string[] = [];
     const next = (line: string): string => {
       if (line.trim() === end) {
-        this.server.files.set(name, `${lines.join('\n')}\n`);
+        const before = append ? (this.server.files.get(name) ?? '') : '';
+        this.server.files.set(name, `${before}${before && !before.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`);
         return '';
       }
       lines.push(line);
@@ -171,11 +180,33 @@ export class ServerShell extends PcShell {
     return '';
   }
 
+  /** `named-checkzone ccna.lab ccna.lab.zone`: parses the file as that zone, as BIND would load it. */
+  private checkZone(args: string[]): string {
+    const [zone, path] = args;
+    if (!zone || !path) return 'usage: named-checkzone <zonename> <filename>';
+    const file = path.replace(/^(\/root\/|\.\/)/, '');
+    const text = this.server.files.get(file);
+    if (text === undefined) return `zone ${canonicalName(zone)}/IN: loading from master file ${path} failed: file not found\nzone ${canonicalName(zone)}/IN: not loaded due to errors.`;
+    return checkZoneReport(parseZone(text, zone, file));
+  }
+
+  /** `rndc reload`: zones are read on every query, so this only reports what each one loads as. */
+  private rndc(args: string[]): string {
+    if (args[0] !== 'reload' && args[0] !== 'status') return 'rndc: unknown command; try rndc reload';
+    const zones = this.server.dnsZones.zones;
+    if (!zones.length) return 'rndc: no zone files (name them <zone>.zone or db.<zone>)';
+    if (args[0] === 'status') return `number of zones: ${zones.length}\nserver is up and running`;
+    const bad = zones.filter((z) => !z.loaded);
+    if (!bad.length) return 'server reload successful';
+    return ['rndc: \'reload\' failed: not loaded due to errors', ...bad.map((z) => `zone ${z.origin}/IN: ${z.problems.filter((p) => p.fatal).map((p) => p.message).join('; ')}`)].join('\n');
+  }
+
   private cat(path: string | undefined): string {
     if (!path) return 'cat: missing operand';
     if (path === '/var/log/snmptrapd.log') return this.server.trapLog.join('\n');
     if (path === '/var/log/aaa.log') return this.server.aaa.log.join('\n');
     if (path === '/var/log/xferlog') return this.server.transferLog.join('\n');
+    if (path === '/var/log/named.log') return this.server.queryLog.join('\n');
     const f = this.server.files.get(path.replace(/^(\/root\/|\.\/)/, ''));
     return f ?? `cat: ${path}: No such file or directory`;
   }

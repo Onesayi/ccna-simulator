@@ -58,3 +58,4 @@ export * from './services/dscp';
 export * from './services/qos';
 export * from './switching/storm-control';
 export * from './exam';
+export * from './services/dns';

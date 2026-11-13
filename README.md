@@ -22,7 +22,7 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 66 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 68 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
@@ -35,7 +35,7 @@ The **Labs** tab has 66 hands-on labs covering all five domains of the CCNA 200-
 
 ### Practice exam
 
-The **Exam** tab runs timed multiple-choice exams from a bank of 179 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
+The **Exam** tab runs timed multiple-choice exams from a bank of 185 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
 
 - **Three lengths, or one domain.** A 20-question quick exam, a 50-question half exam or a full 100-question, 120-minute exam, mixed or limited to one domain.
 - **Exam-style navigation.** Flag questions for review, jump around with the question grid, and pick up where you left off after a reload. The exam is marked when time runs out.
@@ -45,7 +45,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 179 original qu
 ![Practice exam results: score out of 1000, a breakdown by domain, labs to practise and a review of missed questions](docs/img/exam-results.png)
 
 <details>
-<summary>All 66 labs</summary>
+<summary>All 68 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -68,6 +68,8 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 179 original qu
 | Share the load between both gateways | 3.4 |
 | Hand out addresses with DHCP | 1.6, 1.7 |
 | Relay DHCP to a central server (troubleshooting) | 1.6, 1.7 |
+| Names for the office: DNS records | 4.4 |
+| Names that will not resolve (troubleshooting) | 4.4, 4.3 |
 | Share one public address with PAT | 4.3 |
 | Publish a web server with static NAT | 4.3 |
 | Keep guests off the servers with a standard ACL | 4.6 |
@@ -135,6 +137,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 179 original qu
 - **Storm control and RA guard**: broadcast, multicast and unicast thresholds (percent or pps) with drop, trap or shutdown actions and errdisable recovery; IPv6 RA guard policies with host and router roles. PCs have `flood` and `fake_router6` to test them.
 - **QoS**: DSCP marking on hosts, class maps and policy maps (marking, policing, priority, bandwidth, shaping, fair-queue) with `service-policy` and `show policy-map interface`, and `mls qos` trust boundaries on switches.
 - **File transfer**: `copy` between running-config, startup-config, flash and TFTP, FTP, SCP or SFTP servers with the IOS prompts and URLs, `ip ftp username/password`, `dir flash:` and `show startup-config`; the Linux server runs the file services.
+- **DNS**: a BIND-style DNS server on the Linux server (zone files with A, AAAA, CNAME, MX, NS, PTR and SOA records, `named-checkzone`, `rndc reload` and a query log), Windows `nslookup` (including `-type=` and reverse lookups) and ping, tracert, telnet, ssh and curl by name on PCs, DNS servers and suffixes from DHCP, and on IOS `ip domain lookup`, `ip name-server`, `ip domain name`, `ip host`, `ip dns server` (with forwarding), `show hosts` and `clear host`, including the "Translating..." pause after a mistyped command.
 - **DHCP snooping**: trusted and untrusted ports, per-VLAN enablement, option 82 insertion, the binding table, and drops logged for rogue servers and spoofed client MACs.
 - **Dynamic ARP Inspection**: per-VLAN ARP inspection against the snooping bindings, trusted ports, ARP ACLs for static hosts, optional src-mac/dst-mac/IP validation, rate limiting with err-disable, and `show ip arp inspection`.
 - **IP Source Guard**: `ip verify source` filtering by source IP (and MAC with `port-security`) against the snooping bindings and static `ip source binding` entries, with err-disable recovery for ARP inspection.
@@ -188,7 +191,7 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, the practice exam's drawing and scoring, a well-formedness check on every exam question, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, DNS, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, the practice exam's drawing and scoring, a well-formedness check on every exam question, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
 | App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, configuring a router over NETCONF, completing a lab end to end, hints, solutions and deep links, and a practice exam from start to results, including a reload and the clock running out. |
 
 ```bash
@@ -240,7 +243,7 @@ Add the lab's id to the order in `catalog/index.ts` and `npm test` will prove it
 
 ## Roadmap
 
-Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, the packet capture panel, VRRP/GLBP, storm control, RA guard, QoS, file transfer, the practice exam and Tab completion. Next up: DNS and reload. See [docs/design.md](docs/design.md).
+Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, the packet capture panel, VRRP/GLBP, storm control, RA guard, QoS, file transfer, the practice exam, Tab completion and DNS. Next up: reload. See [docs/design.md](docs/design.md).
 
 ## License
 

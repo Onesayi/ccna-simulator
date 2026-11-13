@@ -85,6 +85,7 @@ export class LabRun {
         const [address = '', len = '24'] = spec.ip.split('/');
         d.configure(address, parsePrefix(len), spec.gateway);
       }
+      if (d instanceof Pc && spec.dns) d.dnsServer = spec.dns;
       if (d instanceof Pc && spec.ipv6 && spec.ipv6 !== 'auto') {
         const { address, prefix } = parseIpv6Prefix(spec.ipv6);
         d.configureIpv6(address, prefix, spec.gateway6);
