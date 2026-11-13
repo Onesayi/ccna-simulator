@@ -1,6 +1,6 @@
 import { ipToInt, networkAddress, type Ipv4Address, type MacAddress } from '../core/addressing';
 import type { ExternalLsa, Lsa, LsaLink, NetworkLsa, OspfHello, OspfMessage, OspfPacket, RouterLsa } from '../core/frames';
-import { shortName, type Interface } from '../devices/device';
+import { portSpeedMbps, shortName, type Interface } from '../devices/device';
 import type { Route } from '../devices/ip-device';
 
 export const OSPF_AD = 110;
@@ -119,7 +119,7 @@ export class OspfProcess {
 
   cost(i: Interface): number {
     if (i.ospf?.cost) return i.ospf.cost;
-    const kbps = i.bandwidth ?? (i.kind === 'loopback' ? 8_000_000 : 1_000_000);
+    const kbps = i.bandwidth ?? (i.kind === 'loopback' ? 8_000_000 : portSpeedMbps(i) * 1000);
     return Math.max(1, Math.floor((this.referenceBandwidth * 1000) / kbps));
   }
 

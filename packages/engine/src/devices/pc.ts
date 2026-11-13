@@ -1,3 +1,4 @@
+import type { TrafficFlow } from '../services/traffic';
 import { BROADCAST_MAC, ipToInt, isValidIp, type Ipv4Address } from '../core/addressing';
 import { ALL_NODES, ipv6MulticastMac, ipv6Network, isLinkLocal, normaliseIpv6, type Ipv6Address } from '../core/ipv6';
 import type { DhcpMessage, Dot11Frame, Frame, UdpPacket } from '../core/frames';
@@ -42,6 +43,8 @@ export class Pc extends IpDevice {
   /** Set while the PC has a self-assigned 169.254.x.x address because no DHCP server answered. */
   apipa = false;
   dnsServer?: Ipv4Address;
+  /** Traffic generator flows this host sends during `traffic run`. */
+  readonly flows: TrafficFlow[] = [];
   /** A DNS suffix set by hand; otherwise the domain name from DHCP is used. */
   dnsSuffix?: string;
   lease?: DhcpMessage;

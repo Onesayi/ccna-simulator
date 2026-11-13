@@ -147,6 +147,34 @@ export interface Interface {
   servicePolicy?: { input?: string; output?: string };
   /** `mls qos trust dscp|cos`: keep the marking that arrives (with `mls qos` on, untrusted ports reset DSCP to 0). */
   qosTrust?: 'dscp' | 'cos';
+  /** `speed 10|100|1000` in Mbps: the rate the port really sends at. Unset means auto (the port's full speed). */
+  speed?: number;
+  /** Output queue results from traffic generator runs (`show interfaces`). */
+  queueStats?: QueueStats;
+}
+
+/** What traffic generator runs did to an interface's output queue. */
+export interface QueueStats {
+  packets: number;
+  bytes: number;
+  drops: number;
+  /** Over the last run, in bps. */
+  outputRate: number;
+  depth: number;
+  /** Queue capacity: the 40-packet hold queue, or the sum of the service policy's class queues. */
+  max: number;
+}
+
+/** Full rate of a port in Mbps, from its name: Ethernet 10, FastEthernet 100, GigabitEthernet 1000, Serial a T1. */
+export function portSpeedMbps(i: Interface): number {
+  const base = i.parent ?? i;
+  if (base.speed) return base.speed;
+  const n = base.name.toLowerCase();
+  if (n.startsWith('fastethernet')) return 100;
+  if (n.startsWith('serial')) return 1.544;
+  if (n.startsWith('ethernet')) return 10;
+  if (n.startsWith('tengigabit')) return 10_000;
+  return 1000;
 }
 
 export interface VrrpGroupConfig {

@@ -10,6 +10,7 @@ import { Server } from '../devices/server';
 import { CliSession } from '../cli/session';
 import type { Interaction, Shell } from '../cli/remote';
 import { evaluate } from './checks';
+import { parseFlow } from '../services/traffic';
 import { PROBE_CHECKS, type LabDefinition, type Objective } from './types';
 
 /**
@@ -86,6 +87,10 @@ export class LabRun {
         d.configure(address, parsePrefix(len), spec.gateway);
       }
       if (d instanceof Pc && spec.dns) d.dnsServer = spec.dns;
+      for (const line of d instanceof Pc ? (spec.flows ?? []) : []) {
+        const [name = '', dst = '', ...opts] = line.split(/\s+/);
+        (d as Pc).flows.push(parseFlow(name, dst, opts));
+      }
       if (d instanceof Pc && spec.ipv6 && spec.ipv6 !== 'auto') {
         const { address, prefix } = parseIpv6Prefix(spec.ipv6);
         d.configureIpv6(address, prefix, spec.gateway6);

@@ -330,7 +330,7 @@ export function runningConfig(d: Device & IpDevice): string {
     if (i.lldp?.transmit === false) out.push(' no lldp transmit');
     if (i.lldp?.receive === false) out.push(' no lldp receive');
     if (!i.adminUp) out.push(' shutdown');
-    if (d instanceof Router && i.kind === 'physical') out.push(' duplex auto', ' speed auto');
+    if (d instanceof Router && i.kind === 'physical') out.push(' duplex auto', ` speed ${i.speed ?? 'auto'}`);
     out.push('!');
   }
   if (d instanceof Router) for (const p of d.ospf.values()) out.push(...ospfConfig(p));

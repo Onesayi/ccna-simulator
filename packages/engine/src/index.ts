@@ -59,3 +59,5 @@ export * from './services/qos';
 export * from './switching/storm-control';
 export * from './exam';
 export * from './services/dns';
+export * from './services/queuing';
+export * from './services/traffic';

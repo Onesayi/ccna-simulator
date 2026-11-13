@@ -145,7 +145,7 @@ Ping the server from PHONE and PC2, then look at \`show policy-map interface\` o
         service-policy output WAN-OUT
         end`,
     },
-    debrief: 'MQC has three steps: classify with class maps (DSCP, ACLs, protocols), decide what to do per class in a policy map (mark, police, shape, queue), and attach the policy to an interface in one direction. Mark as close to the source as you can and queue where the link is slowest; in this simulator links never congest, so `show policy-map interface` shows the classification and markings rather than real queue drops.',
+    debrief: 'MQC has three steps: classify with class maps (DSCP, ACLs, protocols), decide what to do per class in a policy map (mark, police, shape, queue), and attach the policy to an interface in one direction. Mark as close to the source as you can and queue where the link is slowest. The WAN here only has `bandwidth 10000` (a number, not a speed limit), so it never congests; the next labs slow it down with `speed 10` and load it with the traffic generator to show the queues at work.',
   },
   {
     id: 'qos-trust-boundary',

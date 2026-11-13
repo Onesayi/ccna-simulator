@@ -13,6 +13,7 @@ import { LightweightAp } from '../devices/ap';
 import { WirelessController, wlanSecurity } from '../devices/wlc';
 import { formatMethods } from '../services/aaa';
 import { dscpName } from '../services/dscp';
+import { runTraffic, voiceQualityGood } from '../services/traffic';
 import type { Check } from './types';
 
 export interface CheckResult {
@@ -826,6 +827,18 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       if (check.priority && !c.priority) return fail(`Class ${check.class} has no priority queue`);
       if (check.bandwidth && !c.bandwidth) return fail(`Class ${check.class} has no bandwidth guarantee`);
       if (check.police && !c.police) return fail(`Class ${check.class} has no policer`);
+      if (check.shape && !c.shape) return fail(`Class ${check.class} is not shaped`);
+      if (check.child && c.child !== check.child) return fail(c.child ? `Class ${check.class} uses child policy ${c.child}` : `Class ${check.class} has no child policy (service-policy ${check.child})`);
+      return ok;
+    }
+    case 'trafficFlow': {
+      const host = device(check.from);
+      const result = runTraffic(host.network!, { record: false }).flows.find((r) => r.host === host && r.flow.name.toLowerCase() === check.flow.toLowerCase());
+      if (!result) return fail(`${host.hostname} has no traffic flow ${check.flow}`);
+      if (result.unreachable) return fail(`Flow ${check.flow} does not get through: ${result.unreachable}`);
+      const summary = `${result.lossPct.toFixed(1)}% loss, ${Math.round(result.delayMs)} ms delay, ${Math.round(result.jitterMs)} ms jitter`;
+      if (check.maxLossPct !== undefined && result.lossPct > check.maxLossPct) return fail(`Flow ${check.flow}: ${summary}`);
+      if (check.voice && !voiceQualityGood(result)) return fail(`Flow ${check.flow} is not good enough for voice: ${summary}`);
       return ok;
     }
     case 'qosTrust': {

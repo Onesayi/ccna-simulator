@@ -22,11 +22,11 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 68 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 71 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
-- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, HSRP, VRRP and GLBP roles, storm-control levels, RA guard policies, QoS policies and trust states, saved configs and backups on the server, DHCP snooping trust and bindings, SSH and VTY settings, AAA method lists and logins, SNMP communities, users and traps, RESTCONF responses, WLANs, AP joins and wireless clients, NTP sync and time zones, CDP and LLDP neighbors, and real traffic: pings, traceroutes, TCP connections, DSCP markings on arrival, broadcast storms and rogue router advertisements. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
+- **Automatic checking.** Each objective is a check run against the live engine state: VLANs, access and trunk ports, sub-interfaces, SVIs, addresses, gateways, routes in the routing table, configured floating statics, OSPF neighbors, router IDs and DR/BDR roles, DHCP pools and leases, NAT and ACL placement, IPv6 addresses and routes, spanning-tree roots and port roles, PortFast and BPDU guard, EtherChannel bundles, port security and secure MACs, HSRP, VRRP and GLBP roles, storm-control levels, RA guard policies, QoS policies and trust states, traffic generator results (loss and voice quality under congestion), saved configs and backups on the server, DHCP snooping trust and bindings, SSH and VTY settings, AAA method lists and logins, SNMP communities, users and traps, RESTCONF responses, WLANs, AP joins and wireless clients, NTP sync and time zones, CDP and LLDP neighbors, and real traffic: pings, traceroutes, TCP connections, DSCP markings on arrival, broadcast storms and rogue router advertisements. Configuration checks update as you type; traffic checks run when you press *Check my work*. A failed check says what it saw ("Gi0/1 is in VLAN 1"), not the answer.
 - **Hints, quizzes and solutions.** Objectives carry optional hints, labs include multiple-choice questions on the theory behind them, and every lab has a model answer you can reveal.
 - **Progress tracking.** Completion, checks and hints used are saved in your browser, and the catalog shows progress per blueprint domain.
 - **Shareable links.** Each lab has its own URL, such as `#/labs/floating-static`.
@@ -35,7 +35,7 @@ The **Labs** tab has 68 hands-on labs covering all five domains of the CCNA 200-
 
 ### Practice exam
 
-The **Exam** tab runs timed multiple-choice exams from a bank of 185 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
+The **Exam** tab runs timed multiple-choice exams from a bank of 191 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
 
 - **Three lengths, or one domain.** A 20-question quick exam, a 50-question half exam or a full 100-question, 120-minute exam, mixed or limited to one domain.
 - **Exam-style navigation.** Flag questions for review, jump around with the question grid, and pick up where you left off after a reload. The exam is marked when time runs out.
@@ -45,7 +45,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 185 original qu
 ![Practice exam results: score out of 1000, a breakdown by domain, labs to practise and a review of missed questions](docs/img/exam-results.png)
 
 <details>
-<summary>All 68 labs</summary>
+<summary>All 71 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -95,6 +95,9 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 185 original qu
 | Keep rogue IPv6 routers off the LAN | 4.7, 4.7.d |
 | Mark and prioritize voice across the WAN | 4.0 (QoS) |
 | Find where the voice marking gets lost (troubleshooting) | 4.0 (QoS), 5.6 |
+| Keep calls clear on a congested WAN | 4.0 (QoS) |
+| Shape to the provider's contract | 4.0 (QoS) |
+| Calls still break up with QoS on (troubleshooting) | 4.0 (QoS) |
 | Build a WPA2-Personal WLAN | 1.5, 1.6 |
 | Help an AP find its controller (troubleshooting) | 1.5, 1.7 |
 | Plan the channels (troubleshooting) | 1.5 |
@@ -135,7 +138,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 185 original qu
 - **HSRP**: versions 1 and 2, priority, preemption, interface tracking, the virtual MAC answering ARP, state changes in the log, and `show standby [brief]`.
 - **VRRP and GLBP**: VRRP masters and backups with default preemption and address owners, and GLBP with an active virtual gateway handing out up to four virtual MACs (round-robin, weighted or host-dependent), with `show vrrp [brief]` and `show glbp [brief]`.
 - **Storm control and RA guard**: broadcast, multicast and unicast thresholds (percent or pps) with drop, trap or shutdown actions and errdisable recovery; IPv6 RA guard policies with host and router roles. PCs have `flood` and `fake_router6` to test them.
-- **QoS**: DSCP marking on hosts, class maps and policy maps (marking, policing, priority, bandwidth, shaping, fair-queue) with `service-policy` and `show policy-map interface`, and `mls qos` trust boundaries on switches.
+- **QoS**: DSCP marking on hosts, class maps and policy maps (marking, policing, priority, bandwidth, shaping, fair-queue, WRED, queue limits, hierarchical policies) with `service-policy` and `show policy-map interface`, and `mls qos` trust boundaries on switches. Links really congest: `speed 10|100|1000` sets what a router port can send, and a traffic generator on PCs and servers (`traffic add VOICE 172.16.0.10 rate 240 dscp ef`, then `traffic run`) loads the network and reports each flow's throughput, loss, delay and jitter, with drops and queue depths in `show policy-map interface` and `show interfaces`.
 - **File transfer**: `copy` between running-config, startup-config, flash and TFTP, FTP, SCP or SFTP servers with the IOS prompts and URLs, `ip ftp username/password`, `dir flash:` and `show startup-config`; the Linux server runs the file services.
 - **DNS**: a BIND-style DNS server on the Linux server (zone files with A, AAAA, CNAME, MX, NS, PTR and SOA records, `named-checkzone`, `rndc reload` and a query log), Windows `nslookup` (including `-type=` and reverse lookups) and ping, tracert, telnet, ssh and curl by name on PCs, DNS servers and suffixes from DHCP, and on IOS `ip domain lookup`, `ip name-server`, `ip domain name`, `ip host`, `ip dns server` (with forwarding), `show hosts` and `clear host`, including the "Translating..." pause after a mistyped command.
 - **DHCP snooping**: trusted and untrusted ports, per-VLAN enablement, option 82 insertion, the binding table, and drops logged for rogue servers and spoofed client MACs.
@@ -243,7 +246,7 @@ Add the lab's id to the order in `catalog/index.ts` and `npm test` will prove it
 
 ## Roadmap
 
-Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, the packet capture panel, VRRP/GLBP, storm control, RA guard, QoS, file transfer, the practice exam, Tab completion and DNS. Next up: reload. See [docs/design.md](docs/design.md).
+Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, the packet capture panel, VRRP/GLBP, storm control, RA guard, QoS (with real congestion), file transfer, the practice exam, Tab completion and DNS. Next up: reload. See [docs/design.md](docs/design.md).
 
 ## License
 

@@ -8,6 +8,8 @@ interface IpHeader {
   ttl: number;
   /** DiffServ code point (0-63) from the ToS byte. Unset means 0 (best effort). */
   dscp?: number;
+  /** A traffic generator probe: the id of the flow whose path it traces (see services/traffic.ts). */
+  flow?: string;
 }
 
 export interface IcmpPacket extends IpHeader {
