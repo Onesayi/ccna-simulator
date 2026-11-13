@@ -2,6 +2,7 @@ import { CDP_MAC, LLDP_MAC, type DiscoveryPdu, type Frame, type SnmpMessage, typ
 import { Aaa, type AaaContext } from '../services/aaa';
 import { CDP_HOLDTIME, Discovery, LLDP_HOLDTIME, advertisedAddress } from '../services/discovery';
 import { Management, type LoginResult, type Transport } from '../services/management';
+import { NetconfServer, NETCONF_PORT } from '../services/netconf';
 import { NtpClock } from '../services/ntp';
 import { SnmpAgent } from '../services/snmp';
 import { buildMib } from '../services/snmp-mib';
@@ -28,6 +29,8 @@ export abstract class IosDevice extends IpDevice {
   readonly aaa: Aaa;
   readonly snmp: SnmpAgent;
   readonly http: HttpConfig = { server: false, secure: false, authLocal: false, restconf: false };
+  /** `netconf-yang`: the NETCONF server on TCP 830. */
+  readonly netconf = new NetconfServer();
   readonly discovery: Discovery;
   readonly ntp: NtpClock;
   /** CDP platform string, as `show cdp neighbors` shows it. */
@@ -123,7 +126,7 @@ export abstract class IosDevice extends IpDevice {
   }
 
   protected override get listeningPorts(): readonly number[] {
-    return [...this.mgmt.listeningPorts(), ...(this.http.server ? [80] : []), ...(this.http.secure ? [443] : [])];
+    return [...this.mgmt.listeningPorts(), ...(this.http.server ? [80] : []), ...(this.http.secure ? [443] : []), ...(this.netconf.enabled ? [NETCONF_PORT] : [])];
   }
 
   /** A standard ACL check on a source address, for `snmp-server community ... <acl>`. Routers override. */

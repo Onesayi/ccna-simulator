@@ -365,6 +365,7 @@ export function runningConfig(d: Device & IpDevice): string {
     const snmp = ios.snmp.config();
     if (snmp.length) out.push('!', ...snmp);
     if (ios.http.restconf) out.push('!', 'restconf');
+    if (ios.netconf.enabled) out.push('!', 'netconf-yang');
   }
   out.push('!', ...(ios ? ios.mgmt.lineConfig() : ['line con 0', '!', 'line vty 0 4', ' login']), '!');
   const ntp = ios?.ntp.config().filter((l) => l.startsWith('ntp')) ?? [];

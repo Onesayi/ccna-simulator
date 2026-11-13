@@ -22,7 +22,7 @@ A browser-based network simulator for studying the Cisco CCNA 200-301 v2.0 exam.
 
 ### Study mode
 
-The **Labs** tab has 64 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
+The **Labs** tab has 66 hands-on labs covering all five domains of the CCNA 200-301 v2.0 blueprint: guided labs, troubleshooting labs with planted faults, and open-ended challenges.
 
 ![The lab catalog grouped by blueprint domain, with progress saved in the browser](docs/img/catalog.png)
 
@@ -35,7 +35,7 @@ The **Labs** tab has 64 hands-on labs covering all five domains of the CCNA 200-
 
 ### Practice exam
 
-The **Exam** tab runs timed multiple-choice exams from a bank of 174 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
+The **Exam** tab runs timed multiple-choice exams from a bank of 179 original questions written from the v2.0 exam topics. Questions are drawn in the blueprint's proportions (25/25/20/20/10 across the five domains) at the real exam's pace of 72 seconds a question.
 
 - **Three lengths, or one domain.** A 20-question quick exam, a 50-question half exam or a full 100-question, 120-minute exam, mixed or limited to one domain.
 - **Exam-style navigation.** Flag questions for review, jump around with the question grid, and pick up where you left off after a reload. The exam is marked when time runs out.
@@ -45,7 +45,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 174 original qu
 ![Practice exam results: score out of 1000, a breakdown by domain, labs to practise and a review of missed questions](docs/img/exam-results.png)
 
 <details>
-<summary>All 64 labs</summary>
+<summary>All 66 labs</summary>
 
 | Lab | Blueprint |
 | --- | --- |
@@ -108,6 +108,8 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 174 original qu
 | Monitor a router with SNMP | 5.4 |
 | Replace SNMPv2c with SNMPv3 (troubleshooting) | 5.4, 4.1 |
 | Read and change a router with RESTCONF | 5.3 |
+| Read and change a router with NETCONF | 5.3 |
+| NETCONF that never connects (troubleshooting) | 5.3 |
 | Configure two routers with Ansible (troubleshooting) | 5.5, 5.3 |
 | Find the fault in a packet capture (troubleshooting) | 5.3, 1.6 |
 | Fix the office network (troubleshooting) | 1.6, 2.4, 3.2.b |
@@ -145,7 +147,7 @@ The **Exam** tab runs timed multiple-choice exams from a bank of 174 original qu
 - **Wireless**: an AireOS-style wireless LAN controller with its own CLI and a web GUI page, lightweight APs that find it by broadcast, a primed controller or DHCP option 43 and join over CAPWAP, WLANs mapped to VLANs through dynamic interfaces, open, WPA2-Personal, WPA3-SAE and WPA2-Enterprise (RADIUS) security, automatic channel assignment, and laptops that join with `netsh wlan connect`. Client traffic is tunnelled to the controller (split MAC), which the capture panel shows as CAPWAP-Data.
 - **AAA**: `aaa new-model` with login authentication, EXEC authorization and accounting method lists, RADIUS and TACACS+ servers and groups, local fallback, and a server-side AAA daemon with users, clients and a live log.
 - **SNMP**: v2c communities with ACLs and v3 users and groups (noAuth, auth, priv) on routers and switches, a MIB-II subset, linkUp/linkDown traps, and `snmpget`, `snmpwalk` and `snmpset` on the Linux server.
-- **Automation**: RESTCONF over `curl` (ietf-interfaces and the hostname as JSON, with GET, PATCH, PUT, POST and DELETE) and `ansible-playbook` with INI inventories, YAML playbooks and the `ios_command`, `ios_config` and `ios_facts` modules over SSH.
+- **Automation**: RESTCONF over `curl` (ietf-interfaces and the hostname as JSON, with GET, PATCH, PUT, POST and DELETE), NETCONF over SSH on port 830 (`netconf-yang`, hellos and capabilities, `get`, `get-config` with subtree and XPath filters, `edit-config` with rollback-on-error, locks and saving to startup) from `netconf-console` or a raw `ssh -s netconf` session, and `ansible-playbook` with INI inventories, YAML playbooks and the `ios_command`, `ios_config` and `ios_facts` modules over SSH.
 - **Packet capture**: click a cable to open a Wireshark-style panel showing every frame crossing it, with protocol, addresses and info, a layer-by-layer detail view, and display filters (`icmp`, `arp`, `ip.addr == ...`, `vlan == 10`, `!stp`).
 
 See [docs/design.md](docs/design.md) for the full feature map and roadmap.
@@ -186,8 +188,8 @@ Some decisions worth calling out:
 
 | Layer | Tool | What it covers |
 | --- | --- | --- |
-| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, the practice exam's drawing and scoring, a well-formedness check on every exam question, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
-| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, completing a lab end to end, hints, solutions and deep links, and a practice exam from start to results, including a reload and the clock running out. |
+| Engine | Vitest | over 550 specs written as small labs: switching, trunks, spanning tree, EtherChannel, port security, HSRP, VRRP, GLBP, storm control, RA guard, QoS, file transfers, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, packet capture, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, NTP, CDP/LLDP, IPv4 and IPv6 routing, the IOS CLI, the PC prompt, the scheduler, the practice exam's drawing and scoring, a well-formedness check on every exam question, and every lab in the catalog. Coverage is enforced in CI (95% of lines). |
+| App | Playwright | The production build in Chromium: the demo network, pinging across routers, the IOS console, adding and deleting devices, the packet capture panel, building a WLAN in the controller GUI, configuring a router over NETCONF, completing a lab end to end, hints, solutions and deep links, and a practice exam from start to results, including a reload and the clock running out. |
 
 ```bash
 npm test              # engine unit tests
@@ -238,7 +240,7 @@ Add the lab's id to the order in `catalog/index.ts` and `npm test` will prove it
 
 ## Roadmap
 
-Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, Ansible, wireless and the packet capture panel. Next up: VRRP/GLBP, storm control, RA guard and NETCONF. See [docs/design.md](docs/design.md).
+Delivered so far: IPv6, Rapid PVST+, FHRP, EtherChannel, port security, DHCP snooping, Dynamic ARP Inspection, IP Source Guard, NTP, SSH, AAA, SNMP, RESTCONF, NETCONF, Ansible, wireless, the packet capture panel, VRRP/GLBP, storm control, RA guard, QoS, file transfer, the practice exam and Tab completion. Next up: DNS and reload. See [docs/design.md](docs/design.md).
 
 ## License
 

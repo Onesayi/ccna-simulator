@@ -1,7 +1,8 @@
 import { formatMethods, parseMethods, type AaaProtocol, type AaaServer } from '../services/aaa';
+import { NETCONF_PORT } from '../services/netconf';
 import { EXEC, INVALID, abbrev, int, ip, requireIos, type Command, type Mode, type Session } from './common';
 
-/** AAA (`aaa new-model`, method lists, RADIUS and TACACS+ servers) and the HTTP server behind RESTCONF. */
+/** AAA (`aaa new-model`, method lists, RADIUS and TACACS+ servers) the HTTP server behind RESTCONF, and NETCONF-YANG. */
 
 const SERVER_MODES: Mode[] = ['config-radius-server', 'config-server-tacacs'];
 const GROUP_MODES: Mode[] = ['config-sg-radius', 'config-sg-tacacs+'];
@@ -209,10 +210,32 @@ export const AAA_COMMANDS: Command[] = [
     d.http.restconf = true;
   } },
   { syntax: 'no restconf', modes: ['config'], help: 'Disable RESTCONF', run: (s) => void (requireIos(s).http.restconf = false) },
+  { syntax: 'netconf-yang', modes: ['config'], help: 'Enable NETCONF over SSH on TCP 830 (logins need aaa new-model)', run: (s) => {
+    const d = requireIos(s);
+    if (d.kind !== 'router') throw new Error(INVALID);
+    d.netconf.enabled = true;
+  } },
+  { syntax: 'no netconf-yang', modes: ['config'], help: 'Disable NETCONF', run: (s) => {
+    const n = requireIos(s).netconf;
+    n.enabled = false;
+    for (const session of [...n.sessions.values()]) n.close(session);
+  } },
+  { syntax: 'show netconf-yang status', modes: ['privileged'], help: 'Whether NETCONF runs, and on which port', run: (s) => {
+    const n = requireIos(s).netconf;
+    return [`netconf-yang: ${n.enabled ? 'enabled' : 'disabled'}`, 'netconf-yang candidate-datastore: disabled', 'netconf-yang side-effect-sync: enabled', `netconf-yang ssh port: ${NETCONF_PORT}`].join('\n');
+  } },
+  { syntax: 'show netconf-yang sessions', modes: ['privileged'], help: 'Open NETCONF sessions and datastore locks', run: (s) => {
+    const n = requireIos(s).netconf;
+    const out = ['R: Global-lock on running datastore', 'C: Global-lock on candidate datastore', 'S: Global-lock on startup datastore', '', `Number of sessions : ${n.sessions.size}`];
+    if (!n.sessions.size) return out.join('\n');
+    out.push('', 'session-id  transport    username             source-host           global-lock', '-'.repeat(79));
+    for (const x of n.sessions.values()) out.push(`${String(x.id).padEnd(12)}netconf-ssh  ${x.user.padEnd(21)}${x.source.padEnd(22)}${n.lockedBy === x.id ? 'R' : 'None'}`);
+    return out.join('\n');
+  } },
   { syntax: 'show platform software yang-management process', modes: ['privileged'], help: 'State of the model-driven programmability processes', run: (s) => {
     const d = requireIos(s);
-    const on = d.http.restconf;
+    const on = d.http.restconf || d.netconf.enabled;
     const state = (b: boolean) => (b ? 'Running' : 'Not Running');
-    return [`confd            : ${state(on)}`, `nesd             : ${state(on)}`, `syncfd           : ${state(on)}`, `ncsshd           : Not Running`, `dmiauthd         : ${state(on)}`, `nginx            : ${state(on && d.http.secure)}`, `ndbmand          : ${state(on)}`, `pubd             : ${state(on)}`].join('\n');
+    return [`confd            : ${state(on)}`, `nesd             : ${state(on)}`, `syncfd           : ${state(on)}`, `ncsshd           : ${state(d.netconf.enabled)}`, `dmiauthd         : ${state(on)}`, `nginx            : ${state(d.http.restconf && d.http.secure)}`, `ndbmand          : ${state(on)}`, `pubd             : ${state(on)}`].join('\n');
   } },
 ];

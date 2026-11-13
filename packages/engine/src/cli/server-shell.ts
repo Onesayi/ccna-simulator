@@ -3,10 +3,12 @@ import type { SnmpMessage, SnmpVarbind } from '../core/frames';
 import type { IosDevice } from '../devices/ios-device';
 import type { Server } from '../devices/server';
 import { runPlaybook, type Connector, type NetworkConnection } from '../services/ansible';
+import { CLIENT_HELLO, EOM, NETCONF_PORT, netconfMessage, rpc, serverHello, type NetconfSession } from '../services/netconf';
 import { restconf } from '../services/restconf';
 import { MIB2_ROOT, compareOid, formatVarbind, resolveOid, translateOid } from '../services/snmp';
 import { PcShell } from './pc-shell';
-import { deviceAt } from './remote';
+import { configFile } from './commands-files';
+import { deviceAt, type Shell } from './remote';
 import { CliSession } from './session';
 import { runningConfig } from './show';
 
@@ -21,6 +23,9 @@ const SERVER_HELP = `Server commands (the PC commands work too: ping, traceroute
   aaa show | aaa log                                    AAA server: settings and live log
   curl -k -u <user>:<pw> https://<ip>/restconf/data/<path>   RESTCONF GET
   curl -k -u <user>:<pw> -X PATCH -d '<json>' https://<ip>/restconf/data/<path>
+  netconf-console --host <ip> -u <user> -p <pw> --hello | --get-config [-x <xpath>]
+                 | --get [-x <xpath>] | --edit-config <file.xml> | --copy-running-to-startup
+  ssh <user>@<ip> -p 830 -s netconf                     Raw NETCONF session (end each message with ]]>]]>)
   ansible-playbook -i <inventory> <playbook.yml>        Run a playbook
   adduser <name> <password> | deluser <name>            File server account (opens FTP 21, SCP/SFTP 22)
   cat /var/log/xferlog                                  Files sent and received (TFTP is always on)
@@ -88,7 +93,7 @@ const REPORTS: Record<string, string> = {
   unsupportedSecLevel: 'Unsupported security level',
 };
 
-/** The Linux prompt of a server: SNMP tools, an AAA server, RESTCONF over curl, and Ansible. */
+/** The Linux prompt of a server: SNMP tools, an AAA server, RESTCONF over curl, NETCONF, and Ansible. */
 export class ServerShell extends PcShell {
   constructor(readonly server: Server) {
     super(server);
@@ -133,6 +138,11 @@ export class ServerShell extends PcShell {
         return this.playbook(rest);
       case 'curl':
         return this.curl(rest);
+      case 'netconf-console':
+      case 'netconf-console2':
+        return this.netconfConsole(rest);
+      case 'ssh':
+        return isNetconfSsh(rest) ? this.netconfSsh(rest) : super.run(line);
       case 'nano':
       case 'vi':
       case 'vim':
@@ -321,6 +331,122 @@ export class ServerShell extends PcShell {
     return u !== undefined && u.password === password && u.privilege >= 15;
   }
 
+  // ---------------------------------------------------------------- NETCONF
+
+  /**
+   * Opens a NETCONF session: TCP 830, then the SSH login. IOS XE checks NETCONF logins through
+   * AAA, so they fail without `aaa new-model`, and the session gets the privilege EXEC
+   * authorization grants (every RPC is refused below 15).
+   */
+  private netconfOpen(host: string | undefined, port: number, user: string | undefined, password: string | undefined, tool: string): { target: IosDevice; session: NetconfSession } | string {
+    const ssh = tool === 'ssh';
+    if (!host || !isValidIp(host)) return ssh ? `ssh: Could not resolve hostname ${host ?? ''}: Name or service not known` : `${tool}: error: a valid --host is required`;
+    const r = this.connect(host, port);
+    const target = deviceAt(this.server, host);
+    if (r.status === 'refused') return ssh ? `ssh: connect to host ${host} port ${port}: Connection refused` : `${tool}: [Errno 111] Connection refused`;
+    if (r.status !== 'open' || !target) return ssh ? `ssh: connect to host ${host} port ${port}: Connection timed out` : `${tool}: timed out`;
+    if (!user || !target.aaa.newModel) return ssh ? `${user ?? 'root'}@${host}: Permission denied (password).` : `${tool}: Authentication failed.`;
+    const login = target.login('vty', 'ssh', user, password);
+    if (!login.ok) return ssh ? `${user}@${host}: Permission denied (password).` : `${tool}: Authentication failed.`;
+    const sourceIp = this.server.nic.ip?.address ?? '0.0.0.0';
+    return { target, session: target.netconf.open(user, sourceIp, login.privilege) };
+  }
+
+  private send(target: IosDevice, session: NetconfSession, text: string) {
+    return netconfMessage(target, session, text, { save: () => void (target.startupConfig = configFile(target)) });
+  }
+
+  /** netconf-console (tail-f / netconf-console2): one session per run, one RPC per operation flag. */
+  private netconfConsole(args: string[]): string {
+    const tool = 'netconf-console';
+    let host: string | undefined;
+    let port = NETCONF_PORT;
+    let user = 'admin';
+    let password = 'admin';
+    let db = 'running';
+    let xpath: string | undefined;
+    const ops: { op: string; file?: string }[] = [];
+    const flat = args.flatMap((a) => (/^--[\w-]+=/.test(a) ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a]));
+    for (let k = 0; k < flat.length; k++) {
+      const a = flat[k]!;
+      const val = () => flat[++k];
+      if (a === '--host') host = val();
+      else if (a === '--port') port = Number(val());
+      else if (a === '-u' || a === '--user') user = val() ?? '';
+      else if (a === '-p' || a === '--password') password = val() ?? '';
+      else if (a === '--db') db = val() ?? 'running';
+      else if (a === '-x' || a === '--xpath') xpath = val();
+      else if (a === '--hello' || a === '--get' || a === '--get-config' || a === '--lock' || a === '--unlock' || a === '--copy-running-to-startup') ops.push({ op: a.slice(2) });
+      else if (a === '--edit-config' || a === '--rpc') ops.push({ op: a.slice(2), file: val() });
+      else return `${tool}: error: unrecognized argument ${a}`;
+    }
+    if (!ops.length) return 'usage: netconf-console --host <ip> [--port 830] -u <user> -p <password> --hello | --get [-x xpath] | --get-config [-x xpath] | --edit-config <file> | --copy-running-to-startup | --lock | --unlock | --rpc <file>';
+    const bodies: string[] = [];
+    const filter = xpath ? `<filter type="xpath" select="${xpath.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"/>` : '';
+    for (const { op, file } of ops) {
+      if (op === 'hello') bodies.push('');
+      else if (op === 'get') bodies.push(`<get>${filter}</get>`);
+      else if (op === 'get-config') bodies.push(`<get-config><source><${db}/></source>${filter}</get-config>`);
+      else if (op === 'lock' || op === 'unlock') bodies.push(`<${op}><target><${db}/></target></${op}>`);
+      else if (op === 'copy-running-to-startup') bodies.push('<copy-config><target><startup/></target><source><running/></source></copy-config>');
+      else {
+        if (!file) return `${tool}: error: argument --${op}: expected one argument`;
+        const text = this.server.files.get(file.replace(/^(\/root\/|\.\/)/, ''));
+        if (text === undefined) return `${tool}: [Errno 2] No such file or directory: '${file}'`;
+        const xml = text.replace(/<\?xml[^>]*\?>/, '').trim();
+        bodies.push(op === 'rpc' ? xml : `<edit-config><target><${db}/></target>${/^<([\w-]+:)?config[\s>]/.test(xml) ? xml : `<config>${xml}</config>`}</edit-config>`);
+      }
+    }
+    const opened = this.netconfOpen(host, port, user, password, tool);
+    if (typeof opened === 'string') return opened;
+    const { target, session } = opened;
+    const out: string[] = [];
+    this.send(target, session, CLIENT_HELLO);
+    let id = 0;
+    for (const body of bodies) {
+      if (!body) {
+        out.push(serverHello(session));
+        continue;
+      }
+      const r = this.send(target, session, rpc(++id, body));
+      if (r.reply) out.push(r.reply);
+      if (r.close) break;
+    }
+    if (!session.closed) target.netconf.close(session);
+    this.server.network?.converge();
+    return out.join('\n');
+  }
+
+  /** `ssh admin@10.0.0.1 -p 830 -s netconf`: a raw session where you type the XML yourself. */
+  private netconfSsh(args: string[]): string {
+    let user: string | undefined;
+    let host: string | undefined;
+    let port = 22;
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k]!;
+      if (a === '-p') port = Number(args[++k]);
+      else if (a === '-l') user = args[++k];
+      else if (a === '-s' || a === '-T') continue;
+      else if (a === 'netconf') continue;
+      else if (a.includes('@')) [user, host] = a.split('@') as [string, string];
+      else host = a;
+    }
+    if (port !== NETCONF_PORT) return `ssh: connect to host ${host ?? ''} port ${port}: the netconf subsystem runs on port ${NETCONF_PORT}`;
+    if (!host || !isValidIp(host)) return `ssh: Could not resolve hostname ${host ?? ''}: Name or service not known`;
+    const r = this.connect(host, port);
+    if (r.status === 'refused') return `ssh: connect to host ${host} port ${port}: Connection refused`;
+    if (r.status !== 'open') return `ssh: connect to host ${host} port ${port}: Connection timed out`;
+    const who = user ?? 'root';
+    this.io.ask(`${who}@${host}'s password: `, (pw) => {
+      const opened = this.netconfOpen(host, port, who, pw, 'ssh');
+      if (typeof opened === 'string') return opened;
+      const { target, session } = opened;
+      this.io.remote = { shell: new NetconfShell((text) => this.send(target, session, text)), host, onClose: () => target.netconf.close(session) };
+      return `${serverHello(session)}\n${EOM}`;
+    }, true);
+    return '';
+  }
+
   // ---------------------------------------------------------------- Ansible
 
   private playbook(args: string[]): string {
@@ -386,4 +512,41 @@ function facts(d: IosDevice): Record<string, unknown> {
     ansible_net_all_ipv4_addresses: d.interfaces.flatMap((i) => (i.ip ? [i.ip.address] : [])),
     ansible_net_interfaces: interfaces,
   };
+}
+
+/** `ssh -s netconf` asks for the NETCONF subsystem; port 830 on its own is enough too. */
+function isNetconfSsh(args: string[]): boolean {
+  const k = args.indexOf('-p');
+  return args.includes('netconf') || (k >= 0 && args[k + 1] === String(NETCONF_PORT));
+}
+
+/**
+ * The client end of a raw NETCONF session: lines are collected until the `]]>]]>` end-of-message
+ * marker, then the whole message goes to the device and its reply is printed.
+ */
+export class NetconfShell implements Shell {
+  readonly prompt = '';
+  closed = false;
+  private buffer = '';
+
+  constructor(private readonly send: (text: string) => { reply?: string; close?: boolean }) {}
+
+  execute(line: string): string {
+    if (line.trim() === '~.') {
+      this.closed = true;
+      return 'Connection closed.';
+    }
+    this.buffer += `${line}\n`;
+    const out: string[] = [];
+    let at: number;
+    while (!this.closed && (at = this.buffer.indexOf(EOM)) >= 0) {
+      const message = this.buffer.slice(0, at).trim();
+      this.buffer = this.buffer.slice(at + EOM.length);
+      if (!message) continue;
+      const r = this.send(message);
+      if (r.reply) out.push(`${r.reply}\n${EOM}`);
+      if (r.close) this.closed = true;
+    }
+    return out.join('\n');
+  }
 }

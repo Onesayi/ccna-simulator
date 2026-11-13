@@ -1,7 +1,7 @@
 import type { LabDefinition, LabDeviceSpec } from '../types';
 
 /** R1 and R2 on SW1 in 192.168.1.0/24, with a Linux server SRV and an ADMIN PC. */
-const R1_IP = `conf t
+export const R1_IP = `conf t
   interface g0/0
   ip address 192.168.1.1 255.255.255.0
   no shutdown`;
@@ -13,7 +13,7 @@ const SSH = `ip domain-name ccna.lab
   transport input ssh
   exit`;
 
-function office(extra: LabDeviceSpec[], r1: string, srv: string = ''): LabDeviceSpec[] {
+export function office(extra: LabDeviceSpec[], r1: string, srv: string = ''): LabDeviceSpec[] {
   return [
     { hostname: 'R1', kind: 'router', at: [250, 0], config: r1 },
     { hostname: 'SW1', kind: 'switch', at: [250, 150] },
@@ -22,7 +22,7 @@ function office(extra: LabDeviceSpec[], r1: string, srv: string = ''): LabDevice
   ];
 }
 
-const OFFICE_LINKS: [string, string][] = [
+export const OFFICE_LINKS: [string, string][] = [
   ['R1 Gi0/0', 'SW1 Gi0/1'],
   ['SRV Eth0', 'SW1 Gi0/2'],
 ];

@@ -45,7 +45,7 @@ function parseLocation(word: string): Location {
 }
 
 /** The configuration as it is saved to a file: no "Building configuration..." banner. */
-function configFile(d: IosDevice): string {
+export function configFile(d: IosDevice): string {
   const text = runningConfig(d);
   return `${text.slice(text.indexOf('!'))}\n`;
 }

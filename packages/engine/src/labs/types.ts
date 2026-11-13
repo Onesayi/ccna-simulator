@@ -169,6 +169,10 @@ export type Check =
   | { type: 'trapReceived'; device: string; from?: string; trap?: 'linkUp' | 'linkDown' }
   /** RESTCONF is reachable: the HTTPS server runs and `restconf` is on. */
   | { type: 'restconf'; device: string }
+  /** NETCONF-YANG is enabled (`netconf-yang`). */
+  | { type: 'netconf'; device: string }
+  /** The device has answered this NETCONF operation (get, get-config, edit-config...) without an error. */
+  | { type: 'netconfRpc'; device: string; rpc: string; username?: string }
   /** A WLAN on the controller with this SSID, optionally enabled, with this security and bridged to this VLAN (0 = untagged). */
   | { type: 'wlan'; device: string; ssid: string; enabled?: boolean; security?: 'open' | 'wpa2-psk' | 'wpa3-sae' | 'wpa2-enterprise'; vlan?: number }
   /** The AP has joined a controller, optionally this one. */

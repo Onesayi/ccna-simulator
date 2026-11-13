@@ -653,6 +653,15 @@ export function evaluate(check: Check, device: DeviceLookup): CheckResult {
       if (!d.http.secure) return fail('The HTTPS server is off (ip http secure-server)');
       return d.http.restconf ? ok : fail('RESTCONF is not enabled');
     }
+    case 'netconf': {
+      const d = iosOf(device(check.device));
+      return d.netconf.enabled ? ok : fail(`NETCONF is not enabled on ${d.hostname} (netconf-yang)`);
+    }
+    case 'netconfRpc': {
+      const d = iosOf(device(check.device));
+      const done = d.netconf.history.some((r) => r.ok && r.rpc === check.rpc && (!check.username || r.user === check.username));
+      return done ? ok : fail(`${d.hostname} has not answered a NETCONF <${check.rpc}> successfully yet`);
+    }
     case 'wlan': {
       const d = device(check.device);
       if (!(d instanceof WirelessController)) throw new Error(`${d.hostname} is not a wireless controller`);
