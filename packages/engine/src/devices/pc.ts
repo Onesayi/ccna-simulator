@@ -1,12 +1,21 @@
-import { BROADCAST_MAC, ipToInt, type Ipv4Address } from '../core/addressing';
+import { BROADCAST_MAC, ipToInt, isValidIp, type Ipv4Address } from '../core/addressing';
 import { ALL_NODES, ipv6MulticastMac, ipv6Network, isLinkLocal, normaliseIpv6, type Ipv6Address } from '../core/ipv6';
 import type { DhcpMessage, Dot11Frame, Frame, UdpPacket } from '../core/frames';
 import { DhcpClient } from '../services/dhcp';
+import { canonicalName } from '../services/dns';
 import { WifiClient, isBeaconing } from '../wireless/wifi';
 import type { Interface } from './device';
 import { IpDevice, LIMITED_BROADCAST } from './ip-device';
 
 export type { PingResult } from './ip-device';
+
+/** How a host name lookup went: the address, or why there is none. */
+export interface HostResolution {
+  /** The name actually looked up (with the DNS suffix added to a single label). */
+  fqdn: string;
+  address?: string;
+  error?: 'no-server' | 'timeout' | 'NXDOMAIN' | 'SERVFAIL' | 'REFUSED' | 'no-address';
+}
 
 export interface PcOptions {
   /** A laptop: the NIC is a Wi-Fi radio (`Wireless0`) that is up only while associated. */
@@ -33,6 +42,8 @@ export class Pc extends IpDevice {
   /** Set while the PC has a self-assigned 169.254.x.x address because no DHCP server answered. */
   apipa = false;
   dnsServer?: Ipv4Address;
+  /** A DNS suffix set by hand; otherwise the domain name from DHCP is used. */
+  dnsSuffix?: string;
   lease?: DhcpMessage;
   /** The Wi-Fi supplicant, on wireless clients only. */
   readonly wifi?: WifiClient;
@@ -124,6 +135,31 @@ export class Pc extends IpDevice {
   /** True when the default gateway is a link-local address, as SLAAC sets it. */
   get gateway6IsLinkLocal(): boolean {
     return this.ipv6.gateway !== undefined && isLinkLocal(this.ipv6.gateway);
+  }
+
+  /** The suffix added to single-label names ("srv" becomes "srv.ccna.lab"). */
+  get searchSuffix(): string | undefined {
+    return this.dnsSuffix ?? this.lease?.domain;
+  }
+
+  /**
+   * The Windows resolver behind ping, tracert, telnet and curl: an IPv4 address is used as is;
+   * a name is sent to the DNS server (A first, then AAAA), with the DNS suffix added to a single label.
+   */
+  resolveName(name: string): HostResolution {
+    if (isValidIp(name)) return { fqdn: name, address: name };
+    const fqdn = canonicalName(!name.includes('.') && this.searchSuffix ? `${name}.${this.searchSuffix}` : name);
+    const server = this.dnsServer;
+    if (!server) return { fqdn, error: 'no-server' };
+    for (const qtype of ['A', 'AAAA'] as const) {
+      const r = this.dnsQuery(server, fqdn, qtype);
+      if (r.status !== 'answer') return { fqdn, error: 'timeout' };
+      const { rcode = 'NOERROR', answers = [] } = r.reply;
+      if (rcode !== 'NOERROR') return { fqdn, error: rcode };
+      const hit = answers.find((a) => a.type === qtype);
+      if (hit) return { fqdn: hit.name, address: hit.data };
+    }
+    return { fqdn, error: 'no-address' };
   }
 
   /** Switches the NIC to DHCP and starts DORA (`ipconfig /renew`). Run the topology to finish it. */

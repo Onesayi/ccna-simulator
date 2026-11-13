@@ -6,22 +6,28 @@ import { Pc } from '../devices/pc';
 import { CliSession } from './session';
 import { Interaction, beginLogin, parseSsh, type Shell } from './remote';
 import { SECURITY_LABEL } from '../wireless/wifi';
+import type { DnsMessage, DnsRecord, DnsType } from '../core/frames';
+import { DNS_TYPES, RCODE_TEXT, canonicalName, formatRecord, reverseName, soaBlock } from '../services/dns';
 
 const PC_HELP = `Available commands:
   ipconfig [/all]                        Show the IP configuration
-  ipconfig <ip> <mask|/len> [gateway]    Set a static IP address (Packet Tracer style)
+  ipconfig <ip> <mask|/len> [gateway] [dns]   Set a static IP address (Packet Tracer style)
   ipconfig /renew                        Get an address from DHCP
   ipconfig /release                      Give the DHCP address back
+  ipconfig /flushdns                     Clear the DNS resolver cache
+  netsh interface ip set dns Ethernet0 static <ip> | dhcp   Set the DNS server
+  nslookup [-type=A|AAAA|CNAME|MX|NS|PTR|SOA] <name|ip> [server]   Ask a DNS server
   ipv6config                             Show the IPv6 configuration
   ipv6config <ipv6>/<len> [gateway]      Set a static IPv6 address
   ipv6config autoconfig                  Get an IPv6 address with SLAAC
-  ping [-n count] [-v tos] <ip|ipv6>     Send ICMP echo requests (-v sets the ToS byte: 184 is DSCP EF)
-  tracert <ip|ipv6>                      Trace the route to a host
+  ping [-n count] [-v tos] <host>        Send ICMP echo requests (-v sets the ToS byte: 184 is DSCP EF)
+  tracert <host>                         Trace the route to a host
   arp -a                                 Show the ARP cache
   arp -d                                 Clear the ARP cache
-  telnet <ip> [port]                     Open a telnet session (or a TCP connection to a port)
-  ssh -l <user> <ip>                     Open an SSH session
-  curl http://<ip>[:port]                Fetch a web page (tests TCP 80 or 443)
+  telnet <host> [port]                   Open a telnet session (or a TCP connection to a port)
+  ssh -l <user> <host>                   Open an SSH session
+  curl http://<host>[:port]              Fetch a web page (tests TCP 80 or 443)
+  (<host> is an IPv4 or IPv6 address, or a name the DNS server resolves)
   arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)
   fake_router6 <prefix>/64               Lab attack tool: rogue IPv6 router advertisement
   flood broadcast|multicast|unicast [-n count]   Lab traffic generator: count frames in one second (default 1000)`;
@@ -75,6 +81,8 @@ export class PcShell implements Shell {
         return this.netsh(args);
       case 'ipconfig':
         return this.ipconfigCommand(args);
+      case 'nslookup':
+        return this.nslookup(args);
       case 'ipv6config':
         return this.ipv6config(args);
       case 'ping':
@@ -113,6 +121,7 @@ export class PcShell implements Shell {
       }
       return this.ipconfig(false);
     }
+    if (flag === '/flushdns') return '\nWindows IP Configuration\n\nSuccessfully flushed the DNS Resolver Cache.\n';
     if (flag === '/release') {
       this.pc.release();
       this.pc.network?.run();
@@ -126,6 +135,7 @@ export class PcShell implements Shell {
   private netsh(args: string[]): string {
     const wifi = this.pc.wifi;
     const [ctx, verb, ...rest] = args.map((a, i) => (i < 2 ? a.toLowerCase() : a));
+    if (ctx === 'interface') return this.netshDns(args);
     if (ctx !== 'wlan') return 'The following command was not found: netsh ' + args.join(' ');
     if (!wifi) return 'There is no wireless interface on the system.';
     if (verb === 'show' && rest[0]?.toLowerCase() === 'networks') return this.networks();
@@ -211,15 +221,17 @@ export class PcShell implements Shell {
 
   private setIp(args: string[]): string {
     // Accept "ipconfig 10.0.0.5 255.255.255.0 10.0.0.1" and "ipconfig 10.0.0.5/24 10.0.0.1".
-    let [address = '', mask, gateway] = args;
-    if (address.includes('/')) [address = '', mask, gateway] = [address.split('/')[0]!, address.split('/')[1], args[1]];
+    let [address = '', mask, gateway, dns] = args;
+    if (address.includes('/')) [address = '', mask, gateway, dns] = [address.split('/')[0]!, address.split('/')[1], args[1], args[2]];
     if (!isValidIp(address) || !mask) return 'Invalid Command.';
     if (gateway && !isValidIp(gateway)) return 'Invalid gateway address.';
+    if (dns && !isValidIp(dns)) return 'Invalid DNS server address.';
     try {
       this.pc.configure(address, parsePrefix(mask), gateway);
     } catch (err) {
       return (err as Error).message;
     }
+    if (dns) this.pc.dnsServer = dns;
     return '';
   }
 
@@ -268,19 +280,19 @@ export class PcShell implements Shell {
       if (!Number.isInteger(tos) || tos < 0 || tos > 255) return 'Bad value for option -v, valid range is from 0 to 255.';
       dscp = tos >> 2;
     }
-    const dst = target(args[0]);
-    if (!dst) return `Ping request could not find host ${args[0] ?? ''}. Please check the name and try again.`;
-    const results = this.pc.pingAny(dst, count, undefined, dscp);
+    const host = this.host(args[0]);
+    if (!host) return `Ping request could not find host ${args[0] ?? ''}. Please check the name and try again.`;
+    const results = this.pc.pingAny(host.address, count, undefined, dscp);
     this.pc.network?.run();
-    return formatWindowsPing(dst, results);
+    return formatWindowsPing(host.address, results, host.name);
   }
 
   private tracert(args: string[]): string {
-    const dst = target(args[0]);
-    if (!dst) return `Unable to resolve target system name ${args[0] ?? ''}.`;
-    const result = this.pc.tracerouteAny(dst);
+    const host = this.host(args[0]);
+    if (!host) return `Unable to resolve target system name ${args[0] ?? ''}.`;
+    const result = this.pc.tracerouteAny(host.address);
     this.pc.network?.run();
-    return formatWindowsTracert(result);
+    return formatWindowsTracert(result, host.name);
   }
 
   protected connect(dst: string, port: number) {
@@ -290,9 +302,12 @@ export class PcShell implements Shell {
   }
 
   private telnet(args: string[]): string {
-    const [dst, p = '23'] = args;
+    const [name, p = '23'] = args;
     const port = Number(p);
-    if (!dst || !isValidIp(dst) || !Number.isInteger(port) || port < 1 || port > 65535) return 'Usage: telnet <ip> [port]';
+    if (!name || !Number.isInteger(port) || port < 1 || port > 65535) return 'Usage: telnet <host> [port]';
+    const dst = this.host(name)?.address;
+    if (!dst) return `Connecting To ${name}...Could not open connection to the host, on port ${port}: Connect failed`;
+    if (!isValidIp(dst)) return 'Usage: telnet <host> [port]';
     const r = this.connect(dst, port);
     if (r.status === 'open' && port === 23) return `Trying ${dst} ...Open${this.login(dst, 'telnet')}`;
     if (r.status === 'open') return `Trying ${dst} ...Open\n\n[Connection to ${dst} closed by foreign host]`;
@@ -300,8 +315,10 @@ export class PcShell implements Shell {
   }
 
   private ssh(args: string[]): string {
-    const { user, host } = parseSsh(args);
-    if (!user || !host || !isValidIp(host)) return 'Usage: ssh -l <username> <ip>';
+    const { user, host: name } = parseSsh(args);
+    if (!user || !name) return 'Usage: ssh -l <username> <host>';
+    const host = this.host(name)?.address;
+    if (!host || !isValidIp(host)) return `ssh: Could not resolve hostname ${name}: No such host is known.`;
     const r = this.connect(host, 22);
     if (r.status === 'open') return this.login(host, 'ssh', user);
     return `% Connection ${r.status === 'refused' ? 'refused by remote host' : 'timed out; remote host not responding'}`;
@@ -312,15 +329,102 @@ export class PcShell implements Shell {
   }
 
   protected curl(args: string[]): string {
-    const m = /^(?:(https?):\/\/)?([\d.]+)(?::(\d+))?\/?$/i.exec(args[0] ?? '');
-    if (!m || !isValidIp(m[2]!)) return `curl: (3) URL using bad/illegal format or missing URL`;
-    const host = m[2]!;
+    const m = /^(?:(https?):\/\/)?([\w.-]+)(?::(\d+))?\/?$/i.exec(args[0] ?? '');
+    if (!m || (/^[\d.]+$/.test(m[2]!) && !isValidIp(m[2]!))) return `curl: (3) URL using bad/illegal format or missing URL`;
+    const host = this.host(m[2]!)?.address;
+    if (!host || !isValidIp(host)) return `curl: (6) Could not resolve host: ${m[2]}`;
     const port = m[3] ? Number(m[3]) : m[1]?.toLowerCase() === 'https' ? 443 : 80;
     const r = this.connect(host, port);
     if (r.status === 'open') return `<html><body><h1>It works!</h1><p>Served by ${host}:${port}</p></body></html>`;
     if (r.status === 'refused') return `curl: (7) Failed to connect to ${host} port ${port}: Connection refused`;
     if (r.status === 'unreachable' || r.status === 'no-route') return `curl: (7) Failed to connect to ${host} port ${port}: No route to host`;
     return `curl: (28) Failed to connect to ${host} port ${port}: Timed out`;
+  }
+
+  /** An address typed as is, or a name looked up through the PC's DNS server. */
+  protected host(arg: string | undefined): { address: string; name?: string } | undefined {
+    const address = target(arg);
+    if (address) return { address };
+    if (!arg || !/^[a-z0-9-]+(\.[a-z0-9-]+)*\.?$/i.test(arg) || /^[\d.]+$/.test(arg)) return undefined;
+    const r = this.pc.resolveName(arg);
+    return r.address ? { address: r.address, name: r.fqdn } : undefined;
+  }
+
+  /** `netsh interface ip set dns "Ethernet0" static 192.168.1.100` (or `dhcp`). */
+  private netshDns(args: string[]): string {
+    const words = args.map((a) => a.toLowerCase().replace(/^name=/, '').replace(/"/g, ''));
+    const at = words.findIndex((w) => w === 'static' || w === 'source=static' || w === 'dhcp' || w === 'source=dhcp');
+    if (!(words[1] === 'ip' || words[1] === 'ipv4') || words[2] !== 'set') return `The following command was not found: netsh ${args.join(' ')}`;
+    if (words[3] !== 'dns' || at < 0) return 'Usage: netsh interface ip set dns Ethernet0 static <ip> | dhcp';
+    if (words[at]!.endsWith('dhcp')) {
+      this.pc.dnsServer = this.pc.lease?.dns;
+      return '';
+    }
+    const server = args[at + 1]?.replace(/^addr=/i, '');
+    if (!server || !isValidIp(server)) return 'The parameter is incorrect.';
+    this.pc.dnsServer = server;
+    return '';
+  }
+
+  /** Windows nslookup: names the server (by a reverse lookup of its address), then asks the question. */
+  private nslookup(args: string[]): string {
+    let qtype: DnsType | undefined;
+    const rest: string[] = [];
+    for (const a of args) {
+      const m = /^-(?:type|q|querytype)=(\w+)$/i.exec(a);
+      if (!m) {
+        rest.push(a);
+        continue;
+      }
+      const t = m[1]!.toUpperCase() as DnsType;
+      if (!DNS_TYPES.includes(t)) return `unknown query type: ${m[1]}`;
+      qtype = t;
+    }
+    const [name, serverArg] = rest;
+    if (!name) return 'Usage: nslookup [-type=A|AAAA|CNAME|MX|NS|PTR|SOA] <name|ip> [server]';
+    if (serverArg && !isValidIp(serverArg)) return `*** Can't find address for server ${serverArg}: Non-existent domain`;
+    const server = serverArg ?? this.pc.dnsServer;
+    if (!server) return ['*** Default servers are not available', 'Server:  UnKnown', 'Address:  127.0.0.1', '', `*** UnKnown can't find ${name}: No response from server`].join('\n');
+    const timedOut = ['DNS request timed out.', '    timeout was 2 seconds.'];
+    const out: string[] = [];
+    const ptr = this.pc.dnsQuery(server, reverseName(server), 'PTR');
+    if (ptr.status !== 'answer') out.push(...timedOut);
+    const serverName = (ptr.status === 'answer' && ptr.reply.answers?.find((a) => a.type === 'PTR')?.data) || 'UnKnown';
+    out.push(`Server:  ${serverName}`, `Address:  ${server}`, '');
+    const reverse = isValidIp(name);
+    const suffix = this.pc.searchSuffix;
+    const qname = reverse ? reverseName(name) : canonicalName(!name.includes('.') && suffix ? `${name}.${suffix}` : name);
+    const types: DnsType[] = qtype ? [qtype] : reverse ? ['PTR'] : ['A', 'AAAA'];
+    const replies: DnsMessage[] = [];
+    for (const t of types) {
+      const r = this.pc.dnsQuery(server, qname, t);
+      if (r.status !== 'answer') return [...out, ...timedOut, `*** Request to ${serverName} timed-out`].join('\n');
+      replies.push(r.reply);
+    }
+    const failed = replies.find((r) => r.rcode && r.rcode !== 'NOERROR');
+    if (failed) return [...out, `*** ${serverName} can't find ${reverse ? name : qname}: ${RCODE_TEXT[failed.rcode!]}`].join('\n');
+    const answers = replies.flatMap((r) => r.answers ?? []);
+    if (answers.length && !replies.every((r) => r.aa)) out.push('Non-authoritative answer:');
+    const typed = qtype !== undefined && qtype !== 'A' && qtype !== 'AAAA';
+    if (typed || (reverse && qtype)) {
+      if (!answers.length) out.push(...replies.flatMap((r) => (r.authority ?? []).filter((a) => a.type === 'SOA').map(soaBlock)));
+      out.push(...answers.map(formatRecord));
+      const extra = dedupe(replies.flatMap((r) => r.additional ?? []));
+      if (extra.length) out.push('', ...extra.map(formatRecord));
+    } else if (reverse) {
+      const p = answers.find((a) => a.type === 'PTR');
+      out.push(`Name:    ${p?.data ?? qname}`, `Address:  ${name}`);
+    } else {
+      const addresses = dedupe(answers.filter((a) => a.type === 'A' || a.type === 'AAAA'));
+      const aliases = [...new Set(answers.filter((a) => a.type === 'CNAME').map((a) => a.name))];
+      out.push(`Name:    ${addresses[0]?.name ?? answers.find((a) => a.type === 'CNAME' && !aliases.includes(a.data))?.data ?? qname}`);
+      // Windows lists IPv6 addresses before IPv4 ones.
+      const list = [...addresses.filter((a) => a.type === 'AAAA'), ...addresses.filter((a) => a.type === 'A')].map((a) => a.data);
+      if (list.length) out.push(`${list.length > 1 ? 'Addresses' : 'Address'}:  ${list.join('\n          ')}`);
+      if (aliases.length) out.push(`Aliases:  ${aliases.join('\n          ')}`);
+    }
+    out.push('');
+    return out.join('\n');
   }
 
   private arpspoof(args: string[]): string {
@@ -390,8 +494,19 @@ function target(arg: string | undefined): string | undefined {
   return isValidIp(arg) ? arg : undefined;
 }
 
-export function formatWindowsPing(dst: string, results: PingResult[]): string {
-  const lines = ['', `Pinging ${dst} with 32 bytes of data:`, ''];
+/** The same record once, however many answers carried it. */
+function dedupe(records: DnsRecord[]): DnsRecord[] {
+  const seen = new Set<string>();
+  return records.filter((r) => {
+    const key = `${r.name}|${r.type}|${r.data}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function formatWindowsPing(dst: string, results: PingResult[], name?: string): string {
+  const lines = ['', `Pinging ${name ? `${name} [${dst}]` : dst} with 32 bytes of data:`, ''];
   const v6 = dst.includes(':');
   for (const r of results) {
     // Windows leaves the bytes and TTL off IPv6 replies.
@@ -413,8 +528,8 @@ export function formatWindowsPing(dst: string, results: PingResult[]): string {
   return lines.join('\n');
 }
 
-export function formatWindowsTracert(t: TracerouteResult): string {
-  const lines = ['', `Tracing route to ${t.destination} over a maximum of 30 hops:`, ''];
+export function formatWindowsTracert(t: TracerouteResult, name?: string): string {
+  const lines = ['', `Tracing route to ${name ? `${name} [${t.destination}]` : t.destination} over a maximum of 30 hops:`, ''];
   for (const hop of t.hops) {
     const cells = hop.probes.map((p) => (p.from ? `${p.rttMs! < 1 ? '<1' : p.rttMs} ms` : '*').padEnd(9));
     const who = hop.probes.find((p) => p.from);

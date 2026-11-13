@@ -4,6 +4,7 @@ import { numberedAclType, parseAclEntry, showAccessLists, type Acl } from '../se
 import { showDhcpBinding, showDhcpPool } from '../services/dhcp';
 import { showNatTranslations } from '../services/nat';
 import { EXEC, IF_MODES, INVALID, abbrev, iface, int, ip, requireIp, requireRouter, type Command, type Session } from './common';
+import { resolveHost } from './commands-dns';
 import { beginLogin } from './remote';
 
 // ---------------------------------------------------------------- ACL helpers
@@ -120,11 +121,12 @@ function ipNum(a: string): number {
 
 // ---------------------------------------------------------------- telnet
 
-function telnet(s: Session, dst: string, port: number): string {
+/** Telnet to an address; `name` is the host name it was resolved from, for the "Trying" line. */
+export function telnet(s: Session, dst: string, port: number, name?: string): string {
   const d = requireIp(s);
   const result = d.connect(ip(dst), port);
   d.network?.run();
-  const head = `Trying ${dst}${port !== 23 ? `, ${port}` : ''} ... `;
+  const head = name ? `Trying ${name} (${dst}${port !== 23 ? `, ${port}` : ''})... ` : `Trying ${dst}${port !== 23 ? `, ${port}` : ''} ... `;
   switch (result.status) {
     case 'open':
       if (port !== 23) return `${head}Open\n\n[Connection to ${dst} closed by foreign host]`;
@@ -137,6 +139,13 @@ function telnet(s: Session, dst: string, port: number): string {
     default:
       return `${head}\n% Connection timed out; remote host not responding`;
   }
+}
+
+function telnetTo(s: Session, host: string, port: number): string {
+  if (/^[\d.]+$/.test(host) && !isValidIp(host)) throw new Error(INVALID);
+  const r = resolveHost(s, host);
+  if ('error' in r) return r.error;
+  return r.banner + telnet(s, r.address, port, r.name);
 }
 
 /** DHCP, NAT, ACLs and telnet. */
@@ -273,9 +282,6 @@ export const SERVICE_COMMANDS: Command[] = [
   } },
 
   // Telnet as a reachability test for TCP (and extended ACLs)
-  { syntax: 'telnet <ip>', modes: EXEC, help: 'Open a telnet connection', run: (s, [dst]) => telnet(s, dst!, 23) },
-  { syntax: 'telnet <ip> <port>', modes: EXEC, help: 'Open a TCP connection to a port', run: (s, [dst, port]) => {
-    if (!isValidIp(dst!)) throw new Error(INVALID);
-    return telnet(s, dst!, int(port, 1, 65535));
-  } },
+  { syntax: 'telnet <host>', modes: EXEC, help: 'Open a telnet connection (address or name)', run: (s, [dst]) => telnetTo(s, dst!, 23) },
+  { syntax: 'telnet <host> <port>', modes: EXEC, help: 'Open a TCP connection to a port', run: (s, [dst, port]) => telnetTo(s, dst!, int(port, 1, 65535)) },
 ];

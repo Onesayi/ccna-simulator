@@ -224,6 +224,42 @@ export interface NtpMessage {
   reference?: string;
 }
 
+/** The DNS record types the simulator serves (CCNA v2.0 objective 4.4, plus SOA for zones). */
+export type DnsType = 'A' | 'AAAA' | 'CNAME' | 'MX' | 'NS' | 'PTR' | 'SOA';
+
+/** A resource record. Names are absolute, lower case and without the trailing dot. */
+export interface DnsRecord {
+  name: string;
+  type: DnsType;
+  ttl: number;
+  /** An address (A, AAAA), a name (CNAME, MX, NS, PTR), or for SOA the primary server. */
+  data: string;
+  /** MX only: lower is preferred. */
+  preference?: number;
+  /** SOA only: the responsible mailbox (as a name) and the serial number. */
+  rname?: string;
+  serial?: number;
+}
+
+export type DnsRcode = 'NOERROR' | 'NXDOMAIN' | 'SERVFAIL' | 'REFUSED';
+
+/** A DNS query or response on UDP 53: one question, and in a response the answer, authority and additional sections. */
+export interface DnsMessage {
+  id: number;
+  response: boolean;
+  name: string;
+  qtype: DnsType;
+  /** Recursion desired (queries) and available (responses). */
+  rd?: boolean;
+  ra?: boolean;
+  /** Authoritative answer: the server owns the zone. */
+  aa?: boolean;
+  rcode?: DnsRcode;
+  answers?: DnsRecord[];
+  authority?: DnsRecord[];
+  additional?: DnsRecord[];
+}
+
 export interface UdpPacket extends IpHeader {
   kind: 'udp';
   srcPort: number;
@@ -236,6 +272,7 @@ export interface UdpPacket extends IpHeader {
   radius?: RadiusMessage;
   snmp?: SnmpMessage;
   capwap?: CapwapMessage;
+  dns?: DnsMessage;
 }
 
 // ---------------------------------------------------------------- OSPF

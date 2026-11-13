@@ -6,7 +6,7 @@ const objective = (page: import('@playwright/test').Page, text: string) =>
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(66);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(68);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 
@@ -137,4 +137,23 @@ test('NETCONF from the server console configures a router', async ({ page }) => 
   await expect(terminal(page)).toContainText('</hello>');
   await expect(terminal(page)).toContainText(']]>]]>');
   await page.screenshot({ path: 'test-results/netconf-ssh.png' });
+});
+
+test('DNS records on the server resolve names on a PC and a router', async ({ page }) => {
+  await page.goto('./#/labs/dns-records');
+  await openDevice(page, 'SRV');
+  await typeLines(page, 'cat >> ccna.lab.zone <<EOF', 'www IN A 192.168.1.100', 'shop IN CNAME www', 'EOF', 'named-checkzone ccna.lab ccna.lab.zone');
+  await expect(terminal(page)).toContainText('loaded serial 2026111301');
+  await expect(objective(page, 'shop.ccna.lab is an alias of www')).toHaveClass(/pass/);
+  await openDevice(page, 'R1');
+  // A typo is looked up as a host name: the console holds the "Translating" line before the error.
+  await typeLines(page, 'shwo');
+  await expect(terminal(page)).toContainText('Translating "shwo"...domain server (255.255.255.255)');
+  await expect(terminal(page)).toContainText('% Unknown command or computer name');
+  await typeLines(page, 'enable', 'conf t', 'ip dhcp pool LAN', 'dns-server 192.168.1.100', 'domain-name ccna.lab', 'end');
+  await openDevice(page, 'PC1');
+  await typeLines(page, 'ipconfig /renew', 'nslookup shop');
+  await expect(terminal(page)).toContainText('Aliases:  shop.ccna.lab');
+  await expect(objective(page, 'PC1 learned its DNS server from DHCP')).toHaveClass(/pass/);
+  await page.screenshot({ path: 'test-results/dns-nslookup.png' });
 });

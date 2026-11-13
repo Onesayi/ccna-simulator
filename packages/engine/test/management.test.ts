@@ -92,7 +92,7 @@ describe('SSH and VTY lines', () => {
     expect(pc.execute('telnet 192.168.1.2')).toContain('% Connection refused by remote host');
     pc.execute('ssh -l admin 192.168.1.2');
     expect(pc.execute('wrong')).toBe('% Authentication failed.\n\n[Connection to 192.168.1.2 closed by foreign host]');
-    expect(pc.execute('ssh 192.168.1.2')).toBe('Usage: ssh -l <username> <ip>');
+    expect(pc.execute('ssh 192.168.1.2')).toBe('Usage: ssh -l <username> <host>');
     expect(pc.execute('ssh -l admin 192.168.1.99')).toContain('timed out');
     expect(new PcShell(t.pc).execute('ssh -l admin 192.168.1.1')).toBe('% Connection refused by remote host');
   });
@@ -172,7 +172,8 @@ describe('SSH and VTY lines', () => {
     expect(cli.execute('ssh -l admin 192.168.1.10')).toBe('% Connection refused by remote host');
     ios(t.r2, 'conf t\nline vty 0 4\ntransport input none');
     expect(cli.execute('ssh -l admin 10.0.12.2')).toBe('% Connection refused by remote host');
-    expect(cli.execute('ssh -l admin bogus')).toContain('% Invalid input');
+    expect(cli.execute('ssh -l admin bogus')).toContain('% Unrecognized host');
+    expect(cli.execute('ssh -l admin 10.1.1')).toContain('% Invalid input');
   });
 
   it('hides passwords in the running config', () => {

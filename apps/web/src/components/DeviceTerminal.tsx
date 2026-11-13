@@ -4,6 +4,10 @@ import { FitAddon } from '@xterm/addon-fit';
 import type { Device } from '@ccna-sim/engine';
 import { useNetwork } from '../state/network';
 
+/** A name lookup that found nothing: the "Translating..." line, then the error once the lookup gives up. */
+const FAILED_LOOKUP = /^(Translating "[^"\n]*"\.\.\.domain server \([^\n]*\))\n(% (?:Unknown command|Unrecognized host)[\s\S]*)$/;
+const LOOKUP_PAUSE_MS = 1500;
+
 /** An xterm.js console bound to one device: the IOS CLI for routers and switches, a command prompt for PCs. */
 export function DeviceTerminal({ device }: { device: Device }) {
   const host = useRef<HTMLDivElement>(null);
@@ -33,15 +37,29 @@ export function DeviceTerminal({ device }: { device: Device }) {
     term.writeln('');
     prompt();
 
+    // While IOS "translates" a mistyped command it ignores the keyboard for a moment.
+    let busy = false;
     const sub = term.onData((data) => {
+      if (busy) return;
       if (data === '\r') {
         term.write('\r\n');
         if (line.trim() && !shell.masked) history.push(line);
         cursor = history.length;
         const out = shell.execute(line);
-        if (out) term.writeln(out);
         touch();
         line = '';
+        const lookup = FAILED_LOOKUP.exec(out);
+        if (lookup) {
+          busy = true;
+          term.writeln(lookup[1]!);
+          window.setTimeout(() => {
+            busy = false;
+            term.writeln(lookup[2]!);
+            prompt();
+          }, LOOKUP_PAUSE_MS);
+          return;
+        }
+        if (out) term.writeln(out);
         prompt();
       } else if (data === '\u007f') {
         if (line.length) {

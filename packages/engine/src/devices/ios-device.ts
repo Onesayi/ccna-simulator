@@ -1,4 +1,6 @@
-import { CDP_MAC, LLDP_MAC, type DiscoveryPdu, type Frame, type SnmpMessage, type TcpPacket, type UdpPacket } from '../core/frames';
+import { isValidIp } from '../core/addressing';
+import { CDP_MAC, LLDP_MAC, type DiscoveryPdu, type DnsMessage, type DnsRecord, type Frame, type SnmpMessage, type TcpPacket, type UdpPacket } from '../core/frames';
+import { IosDnsConfig, addressFromReverse, canonicalName } from '../services/dns';
 import { Aaa, type AaaContext } from '../services/aaa';
 import { CDP_HOLDTIME, Discovery, LLDP_HOLDTIME, advertisedAddress } from '../services/discovery';
 import { Management, type LoginResult, type Transport } from '../services/management';
@@ -7,7 +9,7 @@ import { NtpClock } from '../services/ntp';
 import { SnmpAgent } from '../services/snmp';
 import { buildMib } from '../services/snmp-mib';
 import type { Interface } from './device';
-import { IpDevice } from './ip-device';
+import { IpDevice, LIMITED_BROADCAST } from './ip-device';
 
 /** `ip http server`, `ip http secure-server` and `restconf`. */
 export interface HttpConfig {
@@ -19,6 +21,23 @@ export interface HttpConfig {
 }
 
 let trapRequestId = 7000;
+
+/** How an IOS name lookup went, for the "Translating..." line and the error that follows. */
+export interface IosResolution {
+  address?: string;
+  /** The name servers asked, in order (255.255.255.255 when none is configured). Empty for static or cached names. */
+  servers: string[];
+  /** `no ip domain lookup`: only the host table was consulted. */
+  lookupOff?: boolean;
+}
+
+/** A query an `ip dns server` router forwarded upstream, waiting for the answer to relay back. */
+interface ForwardedQuery {
+  client: string;
+  port: number;
+  id: number;
+  via: string;
+}
 
 /**
  * What routers and switches share as IOS devices: CDP and LLDP, the clock and NTP, and device
@@ -33,6 +52,10 @@ export abstract class IosDevice extends IpDevice {
   readonly netconf = new NetconfServer();
   readonly discovery: Discovery;
   readonly ntp: NtpClock;
+  /** `ip domain lookup`, `ip name-server`, `ip host` and `ip dns server`. */
+  readonly dns = new IosDnsConfig();
+  private readonly forwarded = new Map<number, ForwardedQuery>();
+  private forwardId = 0x5000;
   /** CDP platform string, as `show cdp neighbors` shows it. */
   abstract readonly platform: string;
   /** The software version line in `show cdp neighbors detail`. */
@@ -134,7 +157,68 @@ export abstract class IosDevice extends IpDevice {
     return undefined;
   }
 
+  // ---------------------------------------------------------------- DNS
+
+  /**
+   * Resolves a name the way IOS does for ping, traceroute, telnet and a mistyped command: the host
+   * table (static `ip host` entries and the cache) first, then, unless `no ip domain lookup`, a DNS
+   * query to each name server in turn. A name without a dot gets the `ip domain name` appended.
+   */
+  resolveHost(name: string): IosResolution {
+    if (isValidIp(name)) return { address: name, servers: [] };
+    const fqdn = !name.includes('.') && this.mgmt.domainName ? `${name}.${this.mgmt.domainName}` : name;
+    const known = this.dns.host(name) ?? this.dns.host(fqdn);
+    if (known) return { address: known.addresses[0], servers: [] };
+    if (!this.dns.lookup) return { servers: [], lookupOff: true };
+    const servers = this.dns.nameServers.length ? [...this.dns.nameServers] : [LIMITED_BROADCAST];
+    const asked: string[] = [];
+    for (const server of servers) {
+      asked.push(server);
+      const r = this.dnsQuery(server, canonicalName(fqdn), 'A');
+      if (r.status !== 'answer') continue;
+      const a = r.reply.answers?.find((x) => x.type === 'A');
+      if (a) {
+        this.dns.hosts.set(canonicalName(fqdn), { name: canonicalName(fqdn), addresses: [a.data], perm: false });
+        return { address: a.data, servers: asked };
+      }
+      // A definite "no such name" ends the search; only silence moves on to the next server.
+      break;
+    }
+    return { servers: asked };
+  }
+
+  /** `ip dns server`: answers from the host table, and forwards the rest to our own name servers. */
+  private serveDns(p: UdpPacket, q: DnsMessage): void {
+    if (!this.dns.server || p.dst === LIMITED_BROADCAST) return;
+    const reply = (fields: Partial<DnsMessage>) =>
+      this.sendIp({ kind: 'udp', src: p.dst, dst: p.src, ttl: 255, srcPort: 53, dstPort: p.srcPort, dns: { id: q.id, response: true, name: q.name, qtype: q.qtype, rd: q.rd, ra: true, rcode: 'NOERROR', ...fields } });
+    const name = canonicalName(q.name);
+    const entry = this.dns.host(name);
+    const reverse = addressFromReverse(name);
+    if (q.qtype === 'A' && entry) {
+      return reply({ aa: entry.perm, answers: entry.addresses.map((data): DnsRecord => ({ name, type: 'A', ttl: entry.perm ? 10 : 3600, data })) });
+    }
+    const owner = reverse && [...this.dns.hosts.values()].find((e) => e.perm && e.addresses.includes(reverse));
+    if (q.qtype === 'PTR' && owner) return reply({ aa: true, answers: [{ name, type: 'PTR', ttl: 10, data: canonicalName(owner.name) }] });
+    const upstream = this.dns.nameServers[0];
+    if (!upstream || q.rd === false) return reply({ rcode: entry ? 'NOERROR' : 'NXDOMAIN' });
+    const id = this.forwardId++ & 0xffff;
+    this.forwarded.set(id, { client: p.src, port: p.srcPort, id: q.id, via: p.dst });
+    this.originate(upstream, (src) => ({ kind: 'udp', src, dst: upstream, ttl: 255, srcPort: 53, dstPort: 53, dns: { ...q, id } }));
+  }
+
+  protected override receiveDnsReply(p: UdpPacket): void {
+    const pending = this.forwarded.get(p.dns!.id);
+    if (!pending) return super.receiveDnsReply(p);
+    this.forwarded.delete(p.dns!.id);
+    for (const a of p.dns!.answers ?? []) {
+      if (a.type === 'A' && !this.dns.host(a.name)?.perm) this.dns.hosts.set(a.name, { name: a.name, addresses: [a.data], perm: false });
+    }
+    this.sendIp({ kind: 'udp', src: pending.via, dst: pending.client, ttl: 255, srcPort: 53, dstPort: pending.port, dns: { ...p.dns!, id: pending.id, aa: false, ra: true } });
+  }
+
   protected override handleUdp(p: UdpPacket): void {
+    if (p.dns && !p.dns.response && p.dstPort === 53) return this.serveDns(p, p.dns);
     if (p.radius) return this.aaa.receiveRadius(p.src, p.radius);
     if (p.snmp && p.dstPort === 161) {
       const reply = this.snmp.handle(p.snmp, p.src);

@@ -1,5 +1,7 @@
 import type { SnmpMessage, TcpPacket, TransferMessage, UdpPacket } from '../core/frames';
 import { AaaServerService } from '../services/aaa-server';
+import { ZoneSet, loadZones } from '../services/dns';
+import { LIMITED_BROADCAST } from './ip-device';
 import { formatVarbind, translateOid } from '../services/snmp';
 import { Pc } from './pc';
 
@@ -21,6 +23,8 @@ export class Server extends Pc {
   readonly fileUsers = new Map<string, string>();
   /** One line per file transfer served, newest last (`cat /var/log/xferlog`). */
   readonly transferLog: string[] = [];
+  /** One line per DNS query answered (`cat /var/log/named.log`). */
+  readonly queryLog: string[] = [];
   /** Lines `snmptrapd` wrote, newest last. */
   readonly trapLog: string[] = [];
   private readonly snmpReplies = new Map<number, SnmpMessage>();
@@ -35,6 +39,14 @@ export class Server extends Pc {
     return [80, 443, ...(this.aaa.clients.size ? [49] : []), ...(this.fileUsers.size ? [21, 22] : [])];
   }
 
+  /**
+   * The DNS server (BIND): every file named `<zone>.zone` or `db.<zone>` is a zone, read afresh on
+   * each query, so an edit takes effect at once. With no zone file, nothing listens on UDP 53.
+   */
+  get dnsZones(): ZoneSet {
+    return new ZoneSet(loadZones(this.files));
+  }
+
   /** True while the AAA service has any network device to serve. */
   get aaaRunning(): boolean {
     return this.aaa.clients.size > 0;
@@ -42,6 +54,7 @@ export class Server extends Pc {
 
   protected override handleUdp(p: UdpPacket): void {
     if (p.tftp && p.dstPort === 69) return this.tftp(p);
+    if (p.dns && !p.dns.response && p.dstPort === 53) return this.dns(p);
     if (p.radius && RADIUS_PORTS.includes(p.dstPort) && this.aaaRunning) {
       const reply = this.aaa.radius(p.src, p.radius);
       if (reply) this.sendIp({ kind: 'udp', src: p.dst, dst: p.src, ttl: 64, srcPort: p.dstPort, dstPort: p.srcPort, radius: reply });
@@ -57,6 +70,15 @@ export class Server extends Pc {
     if (!p.tacacs || p.dstPort !== 49 || !this.aaaRunning) return;
     const reply = this.aaa.tacacs(p.src, p.tacacs);
     if (reply) this.sendIp({ kind: 'tcp', src: p.dst, dst: p.src, ttl: 64, srcPort: 49, dstPort: p.srcPort, flags: 'psh', tacacs: reply });
+  }
+
+  private dns(p: UdpPacket): void {
+    const zones = this.dnsZones;
+    if (!zones.zones.length || p.dst === LIMITED_BROADCAST) return;
+    const q = p.dns!;
+    const reply = zones.answer(q);
+    this.queryLog.push(`client ${p.src}#${p.srcPort}: query: ${q.name} IN ${q.qtype} ${q.rd ? '+' : '-'} (${p.dst}) -> ${reply.rcode}`);
+    this.sendIp({ kind: 'udp', src: p.dst, dst: p.src, ttl: 64, srcPort: 53, dstPort: p.srcPort, dns: reply });
   }
 
   /** TFTP has no login: anyone who can reach the server reads and writes its files. */
