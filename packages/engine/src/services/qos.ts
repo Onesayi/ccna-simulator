@@ -30,9 +30,56 @@ export interface PolicyClass {
   bandwidth?: Rate & { remaining?: boolean };
   /** Single-rate policer in bits per second; exceeding traffic is dropped or re-marked. */
   police?: { cir: number; exceed: 'drop' | 'transmit' | { dscp: number } };
-  /** `shape average <bps>`: stored and shown; the simulator has no queues to delay traffic. */
+  /** `shape average <bps>`: holds the class to this rate, queuing (delaying) the excess instead of dropping it. */
   shape?: number;
   fairQueue?: boolean;
+  /** `queue-limit <n> packets`: how deep the class queue may grow before tail drop (IOS default 64). */
+  queueLimit?: number;
+  /** `random-detect [dscp-based]`: WRED drops early, more for higher drop precedence. */
+  randomDetect?: RandomDetect;
+  /** `service-policy <child>` inside a class: a hierarchical policy, usually under a parent shaper. */
+  child?: string;
+}
+
+export interface RandomDetect {
+  dscpBased: boolean;
+  /** `random-detect dscp|precedence <value> <min> <max> [<denominator>]` overrides, by DSCP or precedence. */
+  thresholds: Record<number, WredThreshold>;
+}
+
+export interface WredCounters {
+  tx: number;
+  txBytes: number;
+  random: number;
+  randomBytes: number;
+  tail: number;
+  tailBytes: number;
+}
+
+export interface WredThreshold {
+  min: number;
+  max: number;
+  /** Mark probability denominator: at the max threshold, one packet in `denom` is dropped. */
+  denom: number;
+}
+
+/** IOS default class queue depth, in packets. */
+export const DEFAULT_QUEUE_LIMIT = 64;
+
+/**
+ * WRED thresholds for a DSCP, as IOS sets them by default for a 64-packet queue: higher drop
+ * precedence (AFx3) starts dropping earlier than AFx1, EF last of all.
+ */
+export function wredThreshold(rd: RandomDetect, dscp: number): WredThreshold {
+  const key = rd.dscpBased ? dscp : dscp >> 3;
+  const custom = rd.thresholds[key];
+  if (custom) return custom;
+  let min = 20;
+  if (!rd.dscpBased) min = 20 + 2 * key;
+  else if (dscp === 46) min = 36;
+  else if (dscp >= 10 && dscp <= 38 && dscp % 8 !== 0 && dscp % 2 === 0) min = [32, 28, 24][((dscp % 8) >> 1) - 1]!;
+  else if (dscp % 8 === 0 && dscp > 0) min = 20 + 2 * (dscp >> 3);
+  return { min, max: 40, denom: 10 };
 }
 
 export interface PolicyMap {
@@ -41,11 +88,18 @@ export interface PolicyMap {
   classes: PolicyClass[];
 }
 
-interface ClassCounters {
+export interface ClassCounters {
   packets: number;
   bytes: number;
   conformed: number;
   exceeded: number;
+  /** Queuing results from traffic generator runs: packets sent and dropped (tail, WRED, LLQ over-rate), queue depth. */
+  output?: { packets: number; bytes: number; drops: number; wredDrops: number; priorityDrops: number; depth: number };
+  /** Rates over the last traffic generator run, in bps. */
+  rates?: { offered: number; drop: number };
+  /** WRED counters by DSCP (or precedence), and the mean queue depth it last saw. */
+  wred?: Record<number, WredCounters>;
+  wredMean?: number;
   /** Policer token bucket, in bytes, and when it was last refilled. */
   tokens?: number;
   refilledAt?: number;
@@ -141,9 +195,19 @@ export class Qos {
   apply(iface: Interface, dir: 'input' | 'output', p: IpPacket): IpPacket | undefined {
     const name = iface.servicePolicy?.[dir];
     const policy = name ? this.policyMaps.get(name) : undefined;
-    if (!policy) return p;
+    return policy ? this.applyPolicy(policy, iface, dir, p, '') : p;
+  }
+
+  private applyPolicy(policy: PolicyMap, iface: Interface, dir: 'input' | 'output', p: IpPacket, parent: string): IpPacket | undefined {
     const cls = this.classify(policy, p);
-    const c = this.counter(iface, dir, cls.name);
+    const child = cls.child ? this.policyMaps.get(cls.child) : undefined;
+    const key = parent + cls.name;
+    // A traffic generator probe only traces the path and markings; the queuing model does the counting.
+    if (p.flow !== undefined) {
+      const marked = cls.setDscp !== undefined ? { ...p, dscp: cls.setDscp } : p;
+      return child ? this.applyPolicy(child, iface, dir, marked, `${key}/`) : marked;
+    }
+    const c = this.counter(iface, dir, key);
     const bytes = packetBytes(p);
     c.packets++;
     c.bytes += bytes;
@@ -164,7 +228,7 @@ export class Qos {
         if (exceed !== 'transmit') out = { ...out, dscp: exceed.dscp };
       }
     }
-    return out;
+    return child ? this.applyPolicy(child, iface, dir, out, `${key}/`) : out;
   }
 
   /** Kbps a class reserves on a link of `linkKbps`, for the admission check. */
@@ -180,16 +244,36 @@ export class Qos {
    */
   admission(policy: PolicyMap, iface: Interface, dir: 'input' | 'output', linkKbps: number): string | undefined {
     if (dir === 'input') {
-      const queued = policy.classes.find((c) => c.priority || c.bandwidth || c.fairQueue || c.shape);
-      return queued ? `Queueing (priority, bandwidth, fair-queue, shape) is not supported in the input direction (class ${queued.name})` : undefined;
+      for (const pm of this.withChildren(policy)) {
+        const queued = pm.classes.find((c) => c.priority || c.bandwidth || c.fairQueue || c.shape || c.queueLimit || c.randomDetect);
+        if (queued) return `Queueing (priority, bandwidth, fair-queue, shape) is not supported in the input direction (class ${queued.name})`;
+      }
+      return undefined;
     }
     let used = 0;
     for (const c of policy.classes) {
       const want = Qos.reserved(c, linkKbps);
       if (used + want > linkKbps) return `I/f ${iface.name} class ${c.name} requested bandwidth ${want} (kbps), available only ${linkKbps - used} (kbps)`;
       used += want;
+      const child = c.child ? this.policyMaps.get(c.child) : undefined;
+      // A child policy shares out whatever its parent class is shaped to (or the whole link).
+      const err = child && this.admission(child, iface, dir, c.shape ? c.shape / 1000 : linkKbps);
+      if (err) return err;
     }
     return undefined;
+  }
+
+  /** A policy and every child policy below it. */
+  withChildren(policy: PolicyMap, seen = new Set<string>()): PolicyMap[] {
+    if (seen.has(policy.name)) return [];
+    seen.add(policy.name);
+    const kids = policy.classes.flatMap((c) => (c.child && this.policyMaps.get(c.child) ? this.withChildren(this.policyMaps.get(c.child)!, seen) : []));
+    return [policy, ...kids];
+  }
+
+  /** The policy maps that use a policy map as a child. */
+  parentsOf(policy: string): string[] {
+    return [...this.policyMaps.values()].filter((p) => p.classes.some((c) => c.child === policy)).map((p) => p.name);
   }
 
   /** The policy maps that use a class map. */
@@ -246,6 +330,13 @@ export function actionLines(c: PolicyClass): string[] {
   }
   if (c.setDscp !== undefined) out.push(`set dscp ${dscpName(c.setDscp)}`);
   if (c.fairQueue) out.push('fair-queue');
+  if (c.queueLimit !== undefined) out.push(`queue-limit ${c.queueLimit} packets`);
+  if (c.randomDetect) {
+    const rd = c.randomDetect;
+    out.push(rd.dscpBased ? 'random-detect dscp-based' : 'random-detect');
+    for (const [k, t] of Object.entries(rd.thresholds)) out.push(`random-detect ${rd.dscpBased ? `dscp ${dscpName(Number(k))}` : `precedence ${k}`} ${t.min} ${t.max} ${t.denom}`);
+  }
+  if (c.child) out.push(`service-policy ${c.child}`);
   return out;
 }
 
@@ -287,41 +378,88 @@ export function showPolicyMapInterface(q: Qos, ifaces: Interface[], linkKbps: (i
     for (const dir of dirs) {
       const pm = q.policyMaps.get(i.servicePolicy![dir]!);
       out.push(`  Service-policy ${dir}: ${i.servicePolicy![dir]}`, '');
-      if (!pm) continue;
-      const classes = pm.classes.some((c) => c.name === CLASS_DEFAULT) ? pm.classes : [...pm.classes, { name: CLASS_DEFAULT }];
-      for (const c of classes) {
-        const cm = q.classMaps.get(c.name);
-        const k = q.counter(i, dir, c.name);
-        out.push(
-          `    Class-map: ${c.name} (match-${cm?.matchAll ? 'all' : 'any'})`,
-          `      ${k.packets} packets, ${k.bytes} bytes`,
-          '      5 minute offered rate 0000 bps, drop rate 0000 bps',
-          ...(c.name === CLASS_DEFAULT ? ['      Match: any'] : (cm?.matches ?? []).map((m) => `      Match: ${matchLine(m)}`)),
-        );
-        if (c.priority) {
-          const kbps = Qos.reserved(c, linkKbps(i));
-          out.push('      Priority: Strict, b/w exceed drops: 0', '', `      Priority Level: 1`, `      Priority: ${c.priority.percent !== undefined ? `${c.priority.percent}% (${kbps} kbps)` : `${kbps} (kbps)`}, burst bytes ${Math.round(kbps * 25)}`);
-        }
-        if (c.bandwidth) out.push('      Queueing', `      bandwidth ${rate(c.bandwidth)}${c.bandwidth.remaining ? '' : ` (${Qos.reserved(c, linkKbps(i))} kbps)`}`);
-        if (c.fairQueue) out.push('      Queueing', '      Flow Based Fair Queueing');
-        if (c.shape !== undefined) out.push(`      Shape average ${c.shape} bps`);
-        if (c.police) {
-          const ex = c.police.exceed;
-          out.push(
-            `      police:`,
-            `          cir ${c.police.cir} bps, bc ${Math.max(1500, Math.round(c.police.cir / 8 / 32))} bytes`,
-            `        conformed ${k.conformed} packets; actions:`,
-            '          transmit',
-            `        exceeded ${k.exceeded} packets; actions:`,
-            `          ${ex === 'drop' ? 'drop' : ex === 'transmit' ? 'transmit' : `set-dscp-transmit ${dscpName(ex.dscp)}`}`,
-          );
-        }
-        if (c.setDscp !== undefined) out.push('      QoS Set', `        dscp ${dscpName(c.setDscp)}`, `          Packets marked ${k.packets}`);
-        out.push('');
-      }
+      if (pm) out.push(...policyBlock(q, i, dir, pm, '', 4, linkKbps(i), new Set()));
     }
   }
   return out.join('\n');
+}
+
+function policeLines(c: PolicyClass, k: ClassCounters): string[] {
+  const p = c.police!;
+  const ex = p.exceed;
+  return [
+    'police:',
+    `    cir ${p.cir} bps, bc ${Math.max(1500, Math.round(p.cir / 8 / 32))} bytes`,
+    `  conformed ${k.conformed} packets; actions:`,
+    '    transmit',
+    `  exceeded ${k.exceeded} packets; actions:`,
+    `    ${ex === 'drop' ? 'drop' : ex === 'transmit' ? 'transmit' : `set-dscp-transmit ${dscpName(ex.dscp)}`}`,
+  ];
+}
+
+/** One policy's classes, indented; a child policy nests under its parent class as IOS prints it. */
+function policyBlock(q: Qos, i: Interface, dir: 'input' | 'output', pm: PolicyMap, parent: string, indent: number, kbps: number, seen: Set<string>): string[] {
+  const pad = ' '.repeat(indent);
+  const out: string[] = [];
+  seen.add(pm.name);
+  const classes = pm.classes.some((c) => c.name === CLASS_DEFAULT) ? pm.classes : [...pm.classes, { name: CLASS_DEFAULT }];
+  for (const c of classes) {
+    const cm = q.classMaps.get(c.name);
+    const k = q.counter(i, dir, parent + c.name);
+    const child = c.child && !seen.has(c.child) ? q.policyMaps.get(c.child) : undefined;
+    const lines = [
+      `Class-map: ${c.name} (match-${cm?.matchAll ? 'all' : 'any'})`,
+      `  ${k.packets} packets, ${k.bytes} bytes`,
+      `  30 second offered rate ${k.rates?.offered ?? 0} bps, drop rate ${k.rates?.drop ?? 0} bps`,
+      ...(c.name === CLASS_DEFAULT ? ['  Match: any'] : (cm?.matches ?? []).map((m) => `  Match: ${matchLine(m)}`)),
+    ];
+    const o = k.output;
+    if (c.priority) {
+      const reserved = Qos.reserved(c, kbps);
+      lines.push(
+        '  Priority: Strict, b/w exceed drops: ' + (o?.priorityDrops ?? 0),
+        '',
+        '  Priority Level: 1',
+        `  Priority: ${c.priority.percent !== undefined ? `${c.priority.percent}% (${reserved} kbps)` : `${reserved} (kbps)`}, burst bytes ${Math.round(reserved * 25)}`,
+      );
+    }
+    // Every leaf class of an output policy has its own queue.
+    if (dir === 'output' && !child) {
+      lines.push(
+        '  Queueing',
+        `  queue limit ${c.queueLimit ?? DEFAULT_QUEUE_LIMIT} packets`,
+        `  (queue depth/total drops/no-buffer drops) ${o?.depth ?? 0}/${o?.drops ?? 0}/0`,
+        `  (pkts output/bytes output) ${o?.packets ?? 0}/${o?.bytes ?? 0}`,
+      );
+      if (c.bandwidth) lines.push(`  bandwidth ${rate(c.bandwidth)}${c.bandwidth.remaining ? '' : ` (${Qos.reserved(c, kbps)} kbps)`}`);
+      if (c.fairQueue) lines.push('  Flow Based Fair Queueing');
+    }
+    if (c.shape !== undefined) lines.push(`  shape (average) cir ${c.shape}, bc ${Math.round(c.shape / 250)}, be ${Math.round(c.shape / 250)}`, `  target shape rate ${c.shape}`);
+    if (c.randomDetect) lines.push(...wredLines(c.randomDetect, k));
+    if (c.police) lines.push(...policeLines(c, k).map((l) => `  ${l}`));
+    if (c.setDscp !== undefined) lines.push('  QoS Set', `    dscp ${dscpName(c.setDscp)}`, `      Packets marked ${k.packets}`);
+    out.push(...lines.map((l) => (l ? pad + l : l)));
+    if (child) {
+      out.push('', `${pad}  Service-policy : ${child.name}`, '');
+      out.push(...policyBlock(q, i, dir, child, `${parent}${c.name}/`, indent + 4, c.shape ? c.shape / 1000 : kbps, seen));
+    }
+    out.push('');
+  }
+  return out;
+}
+
+function wredLines(rd: RandomDetect, k: ClassCounters): string[] {
+  const rows = Object.entries(k.wred ?? {}).map(([d, v]) => [Number(d), v] as const);
+  const out = [`  Exp-weight-constant: 9 (1/512)`, `  Mean queue depth: ${k.wredMean ?? 0} packets`];
+  out.push(`  ${rd.dscpBased ? 'dscp ' : 'class'}     Transmitted      Random drop      Tail drop          Minimum        Maximum     Mark`);
+  out.push(`              pkts/bytes       pkts/bytes       pkts/bytes        thresh         thresh     prob`);
+  for (const [d, v] of rows.sort((a, b) => a[0] - b[0])) {
+    // Counters are kept by DSCP for dscp-based WRED and by IP precedence otherwise.
+    const t = wredThreshold(rd, rd.dscpBased ? d : d << 3);
+    const label = rd.dscpBased ? dscpName(d) : String(d);
+    out.push(`  ${label.padEnd(9)}${`${v.tx}/${v.txBytes}`.padStart(15)}${`${v.random}/${v.randomBytes}`.padStart(17)}${`${v.tail}/${v.tailBytes}`.padStart(15)}${String(t.min).padStart(15)}${String(t.max).padStart(15)}${`1/${t.denom}`.padStart(9)}`);
+  }
+  return out;
 }
 
 /** For `show policy-map interface` on interfaces that have no policy. */

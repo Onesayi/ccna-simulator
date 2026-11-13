@@ -46,6 +46,8 @@ export interface LabDeviceSpec {
   files?: Record<string, string>;
   /** PCs only: the DSCP value the PC marks its own traffic with (a softphone marks EF, 46). */
   dscp?: number;
+  /** PCs only: traffic generator flows, as typed after `traffic add` ("VOICE 172.16.0.10 rate 240 udp 16384 size 200"). */
+  flows?: string[];
 }
 
 export interface LabTopology {
@@ -203,7 +205,12 @@ export type Check =
   /** A policy map attached to the interface in this direction. */
   | { type: 'servicePolicy'; device: string; interface: string; direction: 'input' | 'output'; policy: string }
   /** A class in a policy map, optionally marking this DSCP, with a priority queue, a bandwidth guarantee or a policer. */
-  | { type: 'qosClass'; device: string; policy: string; class: string; setDscp?: number; priority?: boolean; bandwidth?: boolean; police?: boolean }
+  | { type: 'qosClass'; device: string; policy: string; class: string; setDscp?: number; priority?: boolean; bandwidth?: boolean; police?: boolean; shape?: boolean; child?: string }
+  /**
+   * Runs the traffic generator (every host's flows, 10 seconds) and checks one flow's result:
+   * loss at most `maxLossPct`, and with `voice`, good voice quality (loss, delay and jitter).
+   */
+  | { type: 'trafficFlow'; from: string; flow: string; maxLossPct?: number; voice?: boolean }
   /** `mls qos` on the switch, and with `interface`, that port's trust state. */
   | { type: 'qosTrust'; device: string; interface?: string; trust?: 'dscp' | 'cos' | 'none' }
   /** Pings from `from` to `to` arrive carrying this DSCP value. */
@@ -226,7 +233,7 @@ export type Check =
 export type CheckType = Check['type'];
 
 /** Checks that send traffic. They change ARP and MAC tables, so they run on demand, not live. */
-export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery', 'stormProbe', 'rogueRa', 'dscpReceived', 'dnsResolve'];
+export const PROBE_CHECKS: CheckType[] = ['ping', 'traceroute', 'connect', 'remoteLogin', 'arpSpoof', 'aaaLogin', 'snmpQuery', 'stormProbe', 'rogueRa', 'dscpReceived', 'dnsResolve', 'trafficFlow'];
 
 export interface Objective {
   text: string;

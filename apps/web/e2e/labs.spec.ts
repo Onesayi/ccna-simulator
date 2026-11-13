@@ -6,7 +6,7 @@ const objective = (page: import('@playwright/test').Page, text: string) =>
 
 test('the catalog lists every lab by blueprint domain', async ({ page }) => {
   await page.goto('./#/labs');
-  await expect(page.locator('.lab-catalog .card')).toHaveCount(68);
+  await expect(page.locator('.lab-catalog .card')).toHaveCount(71);
   await expect(page.locator('.domain-head').first()).toContainText('1.0');
 });
 
@@ -156,4 +156,14 @@ test('DNS records on the server resolve names on a PC and a router', async ({ pa
   await expect(terminal(page)).toContainText('Aliases:  shop.ccna.lab');
   await expect(objective(page, 'PC1 learned its DNS server from DHCP')).toHaveClass(/pass/);
   await page.screenshot({ path: 'test-results/dns-nslookup.png' });
+});
+
+test('the traffic generator shows congestion in a QoS lab', async ({ page }) => {
+  await page.goto('./#/labs/qos-congestion');
+  await openDevice(page, 'PHONE');
+  await typeLines(page, 'traffic run');
+  await expect(terminal(page)).toContainText('Voice quality for VOICE: poor');
+  await page.getByRole('button', { name: 'Check my work' }).click();
+  await expect(objective(page, 'Calls are clear while the backup runs')).toHaveClass(/fail/);
+  await expect(objective(page, 'Calls are clear while the backup runs').locator('.detail')).toContainText('not good enough for voice');
 });

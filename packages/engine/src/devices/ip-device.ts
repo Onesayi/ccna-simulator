@@ -1,3 +1,4 @@
+import { flowTrace } from '../core/flow-trace';
 import {
   BROADCAST_MAC,
   ipToInt,
@@ -534,6 +535,11 @@ export abstract class IpDevice extends Device {
     waiter.resolve(p);
   }
 
+  /** Sends a traffic generator probe as if it were this host's own traffic (marked with the host's DSCP unless set). */
+  sendFlowProbe(dst: Ipv4Address, build: (src: Ipv4Address) => IpPacket): boolean {
+    return this.originate(dst, build);
+  }
+
   /** Sends a locally generated packet, sourced from the exit interface. Returns false when there is no route at all. */
   protected originate(dst: Ipv4Address, build: (src: Ipv4Address) => IpPacket): boolean {
     const marked = (src: Ipv4Address): IpPacket => {
@@ -584,6 +590,7 @@ export abstract class IpDevice extends Device {
     if (p.kind === 'vrrp') return this.handleVrrp(iface, p);
     if (p.kind === 'udp' && this.handleUdpControl(iface, p, frame)) return;
     if (multicast) return;
+    if (p.flow !== undefined && this.forwarding) flowTrace.hop(iface, 'input', p);
     const marked = this.qosIn(iface, p);
     if (!marked) return;
     const q = this.natInbound(iface, marked);
@@ -593,6 +600,7 @@ export abstract class IpDevice extends Device {
   }
 
   private deliverLocal(p: IpPacket): void {
+    if (p.flow !== undefined) return flowTrace.arrive(this, p);
     if (p.kind === 'icmp') {
       if (p.type === 'echo-request') return this.sendIp({ ...p, type: 'echo-reply', src: p.dst, dst: p.src, ttl: this.initialTtl });
       if (p.type === 'echo-reply') return this.resolveWaiter(`icmp:${p.id}:${p.seq}`, p);
@@ -620,6 +628,7 @@ export abstract class IpDevice extends Device {
     const out = this.natOutbound(ingress, path.iface, { ...p, ttl });
     if (!out) return;
     if (!this.permits(path.iface, 'out', out)) return this.icmpError('unreachable', p, ingress);
+    if (out.flow !== undefined) flowTrace.hop(path.iface, 'output', out);
     const queued = this.qosOut(path.iface, out);
     if (queued) this.output(queued, path);
   }

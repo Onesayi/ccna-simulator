@@ -7,6 +7,7 @@ import { CliSession } from './session';
 import { Interaction, beginLogin, parseSsh, type Shell } from './remote';
 import { SECURITY_LABEL } from '../wireless/wifi';
 import type { DnsMessage, DnsRecord, DnsType } from '../core/frames';
+import { trafficCommand } from '../services/traffic';
 import { DNS_TYPES, RCODE_TEXT, canonicalName, formatRecord, reverseName, soaBlock } from '../services/dns';
 
 const PC_HELP = `Available commands:
@@ -30,7 +31,10 @@ const PC_HELP = `Available commands:
   (<host> is an IPv4 or IPv6 address, or a name the DNS server resolves)
   arpspoof <ip> [-n count]               Lab attack tool: gratuitous ARP claiming <ip> (ARP poisoning)
   fake_router6 <prefix>/64               Lab attack tool: rogue IPv6 router advertisement
-  flood broadcast|multicast|unicast [-n count]   Lab traffic generator: count frames in one second (default 1000)`;
+  flood broadcast|multicast|unicast [-n count]   Lab traffic generator: count frames in one second (default 1000)
+  traffic add <name> <ip> rate <kbps> [dscp <v>] [udp|tcp <port>] [size <bytes>] [burst <on-ms> <off-ms>]
+  traffic [delete <name> | clear]        List or remove this host's traffic flows
+  traffic run [seconds]                  Run every host's flows at once: rates, loss, delay and jitter`;
 
 const WIFI_HELP = `
 Wi-Fi (laptops):
@@ -104,6 +108,8 @@ export class PcShell implements Shell {
         return this.fakeRouter6(args);
       case 'flood':
         return this.flood(args);
+      case 'traffic':
+        return trafficCommand(this.pc, args);
       default:
         return `Invalid Command.`;
     }
